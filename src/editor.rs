@@ -205,12 +205,14 @@ fn handle_ipc(
         if let Some((key, val_str)) = rest.split_once(':') {
             if let Ok(value) = val_str.parse::<f64>() {
                 if let Some(&param_ptr) = param_map.get(key) {
-                    // For bool params, value > 0.5 = true (normalized 1.0)
-                    // For float params, we need to convert plain → normalized
-                    let normalized = unsafe { param_ptr.preview_normalized(value as f32) };
-                    context.raw_begin_set_parameter(param_ptr);
-                    context.raw_set_parameter_normalized(param_ptr, normalized);
-                    context.raw_end_set_parameter(param_ptr);
+                    // SAFETY: param_ptr is valid for the lifetime of the plugin.
+                    // We hold Arc<WettBoiParams> which keeps the params alive.
+                    unsafe {
+                        let normalized = param_ptr.preview_normalized(value as f32);
+                        context.raw_begin_set_parameter(param_ptr);
+                        context.raw_set_parameter_normalized(param_ptr, normalized);
+                        context.raw_end_set_parameter(param_ptr);
+                    }
                 }
             }
         }
