@@ -49,7 +49,7 @@ impl raw_window_handle::HasWindowHandle for RwhWrapper {
 
         #[cfg(target_os = "windows")]
         let raw = {
-            let hwnd = std::ptr::NonNull::new(self.0 as *mut _).expect("null HWND");
+            let hwnd = std::num::NonZeroIsize::new(self.0 as isize).expect("null HWND");
             let h = raw_window_handle::Win32WindowHandle::new(hwnd);
             RawWindowHandle::Win32(h)
         };
