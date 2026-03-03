@@ -329,8 +329,9 @@ fn spawn_windows(
     let _ = std::fs::create_dir_all(&data_dir);
     let mut web_context = wry::WebContext::new(Some(data_dir));
 
-    let webview = match wry::WebViewBuilder::new()
-        .with_web_context(&mut web_context)
+    // with_web_context is a constructor (replaces ::new())
+    use wry::WebViewBuilderExtWindows;
+    let webview = match wry::WebViewBuilder::with_web_context(&mut web_context)
         .with_url(&url)
         .with_initialization_script(&init_js)
         .with_ipc_handler(move |msg| {
@@ -342,7 +343,7 @@ fn spawn_windows(
         })
         .with_transparent(false)
         .with_devtools(false)
-        .with_background_color((10, 10, 11, 255))
+        .with_background_color(wry::RGBA { r: 10, g: 10, b: 11, a: 255 })
         .with_additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --allow-insecure-localhost")
         .build(&wrapper)
     {
