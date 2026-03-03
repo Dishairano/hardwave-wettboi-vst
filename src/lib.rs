@@ -4,11 +4,10 @@
 //! - Audio thread: reads params, applies filter → envelope → delay/reverb chain
 //! - Editor thread: wry WebView loaded from wettboi.hardwavestudios.com
 //! - Plugin → WebView: param state pushed at ~30Hz via crossbeam channel
-//! - WebView → Plugin: param changes via IPC → setter channel → applied in process()
+//! - WebView → Plugin: param changes via IPC → GuiContext → nih-plug params
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 use nih_plug::prelude::*;
-use nih_plug::params::Param;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -24,7 +23,7 @@ use dsp::delay::DelayLine;
 use dsp::envelope::AdsrEnvelope;
 use dsp::reverb::Reverb;
 use params::{FxOrder, WettBoiParams};
-use protocol::{ParamChange, WettBoiPacket};
+use protocol::WettBoiPacket;
 
 /// How often we send param state to the editor (every N process calls).
 const EDITOR_UPDATE_INTERVAL: u32 = 512;
@@ -45,10 +44,6 @@ pub struct HardwaveWettBoi {
     editor_packet_tx: Sender<WettBoiPacket>,
     editor_packet_rx: Arc<Mutex<Receiver<WettBoiPacket>>>,
 
-    // Editor → Plugin: param changes from WebView
-    param_change_tx: Arc<Mutex<Sender<ParamChange>>>,
-    param_change_rx: Receiver<ParamChange>,
-
     // Counter for throttled editor updates
     update_counter: u32,
 }
@@ -57,7 +52,6 @@ impl Default for HardwaveWettBoi {
     fn default() -> Self {
         let sr = 44100.0;
         let (pkt_tx, pkt_rx) = bounded::<WettBoiPacket>(4);
-        let (chg_tx, chg_rx) = bounded::<ParamChange>(64);
 
         Self {
             params: Arc::new(WettBoiParams::default()),
@@ -75,8 +69,6 @@ impl Default for HardwaveWettBoi {
             sample_rate: sr,
             editor_packet_tx: pkt_tx,
             editor_packet_rx: Arc::new(Mutex::new(pkt_rx)),
-            param_change_tx: Arc::new(Mutex::new(chg_tx)),
-            param_change_rx: chg_rx,
             update_counter: 0,
         }
     }
@@ -115,8 +107,8 @@ impl Plugin for HardwaveWettBoi {
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let token = auth::load_token();
         Some(Box::new(editor::WettBoiEditor::new(
+            Arc::clone(&self.params),
             Arc::clone(&self.editor_packet_rx),
-            Arc::clone(&self.param_change_tx),
             token,
         )))
     }
@@ -152,11 +144,6 @@ impl Plugin for HardwaveWettBoi {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        // Apply any pending param changes from the WebView
-        while let Ok(change) = self.param_change_rx.try_recv() {
-            self.apply_param_change(&change);
-        }
-
         // Read current param values
         let enabled = self.params.enabled.value();
         let wet = self.params.wet.value();
@@ -197,15 +184,12 @@ impl Plugin for HardwaveWettBoi {
         self.reverb.set_mix(reverb_mix);
 
         if !enabled {
-            // Bypass — audio passes through unchanged
             return ProcessStatus::Normal;
         }
 
         let num_channels = buffer.channels();
         let num_samples = buffer.samples();
 
-        // Process sample-by-sample for stereo pair
-        // We need to handle stereo reverb which needs both channels at once
         if num_channels >= 2 {
             let (left, right_and_rest) = buffer.as_slice().split_first_mut().unwrap();
             let right = &mut right_and_rest[0];
@@ -216,7 +200,6 @@ impl Plugin for HardwaveWettBoi {
                 let dry_l = l;
                 let dry_r = r;
 
-                // Filters
                 if hp_on {
                     l = self.hi_pass[0].process(l);
                     r = self.hi_pass[1].process(r);
@@ -226,13 +209,11 @@ impl Plugin for HardwaveWettBoi {
                     r = self.lo_pass[1].process(r);
                 }
 
-                // ADSR envelope
                 let env_l = self.envelope[0].process(l.abs());
                 let env_r = self.envelope[1].process(r.abs());
                 l *= env_l;
                 r *= env_r;
 
-                // FX chain (delay + reverb in configurable order)
                 match fx_order {
                     FxOrder::DelayReverb => {
                         if delay_on {
@@ -258,12 +239,10 @@ impl Plugin for HardwaveWettBoi {
                     }
                 }
 
-                // Wet/dry mix
                 left[i] = dry_l * (1.0 - wet) + l * wet;
                 right[i] = dry_r * (1.0 - wet) + r * wet;
             }
         } else {
-            // Mono
             let channels = buffer.as_slice();
             let mono = &mut channels[0];
 
@@ -271,12 +250,8 @@ impl Plugin for HardwaveWettBoi {
                 let mut s = mono[i];
                 let dry = s;
 
-                if hp_on {
-                    s = self.hi_pass[0].process(s);
-                }
-                if lp_on {
-                    s = self.lo_pass[0].process(s);
-                }
+                if hp_on { s = self.hi_pass[0].process(s); }
+                if lp_on { s = self.lo_pass[0].process(s); }
 
                 let env = self.envelope[0].process(s.abs());
                 s *= env;
@@ -284,16 +259,10 @@ impl Plugin for HardwaveWettBoi {
                 match fx_order {
                     FxOrder::DelayReverb => {
                         if delay_on { s = self.delay[0].process(s); }
-                        if reverb_on {
-                            let (rl, _) = self.reverb.process(s, s);
-                            s = rl;
-                        }
+                        if reverb_on { let (rl, _) = self.reverb.process(s, s); s = rl; }
                     }
                     FxOrder::ReverbDelay => {
-                        if reverb_on {
-                            let (rl, _) = self.reverb.process(s, s);
-                            s = rl;
-                        }
+                        if reverb_on { let (rl, _) = self.reverb.process(s, s); s = rl; }
                         if delay_on { s = self.delay[0].process(s); }
                     }
                 }
@@ -322,9 +291,9 @@ impl Plugin for HardwaveWettBoi {
                 delay_feedback: delay_fb,
                 delay_mix,
                 reverb_enabled: reverb_on,
-                reverb_size: reverb_size,
+                reverb_size,
                 reverb_damping: reverb_damp,
-                reverb_mix: reverb_mix,
+                reverb_mix,
                 fx_order: match fx_order {
                     FxOrder::DelayReverb => "delay-reverb".to_string(),
                     FxOrder::ReverbDelay => "reverb-delay".to_string(),
@@ -334,39 +303,6 @@ impl Plugin for HardwaveWettBoi {
         }
 
         ProcessStatus::Normal
-    }
-}
-
-impl HardwaveWettBoi {
-    /// Apply a parameter change received from the WebView UI.
-    /// Uses `set_plain_value` from the `Param` trait to update nih-plug params.
-    fn apply_param_change(&self, change: &ParamChange) {
-        let v = change.value as f32;
-        match change.key.as_str() {
-            "enabled" => self.params.enabled.set_plain_value(if change.value > 0.5 { 1.0 } else { 0.0 }),
-            "wet" => self.params.wet.set_plain_value(v),
-            "hiPassEnabled" => self.params.hi_pass_enabled.set_plain_value(if change.value > 0.5 { 1.0 } else { 0.0 }),
-            "hiPassFreq" => self.params.hi_pass_freq.set_plain_value(v),
-            "loPassEnabled" => self.params.lo_pass_enabled.set_plain_value(if change.value > 0.5 { 1.0 } else { 0.0 }),
-            "loPassFreq" => self.params.lo_pass_freq.set_plain_value(v),
-            "attack" => self.params.attack.set_plain_value(v),
-            "decay" => self.params.decay.set_plain_value(v),
-            "sustain" => self.params.sustain.set_plain_value(v),
-            "release" => self.params.release.set_plain_value(v),
-            "delayEnabled" => self.params.delay_enabled.set_plain_value(if change.value > 0.5 { 1.0 } else { 0.0 }),
-            "delayTime" => self.params.delay_time.set_plain_value(v),
-            "delayFeedback" => self.params.delay_feedback.set_plain_value(v),
-            "delayMix" => self.params.delay_mix.set_plain_value(v),
-            "reverbEnabled" => self.params.reverb_enabled.set_plain_value(if change.value > 0.5 { 1.0 } else { 0.0 }),
-            "reverbSize" => self.params.reverb_size.set_plain_value(v),
-            "reverbDamping" => self.params.reverb_damping.set_plain_value(v),
-            "reverbMix" => self.params.reverb_mix.set_plain_value(v),
-            "fxOrder" => {
-                // 0 = delay-reverb, 1 = reverb-delay
-                self.params.fx_order.set_plain_value(if change.value > 0.5 { 1.0 } else { 0.0 });
-            }
-            _ => {}
-        }
     }
 }
 

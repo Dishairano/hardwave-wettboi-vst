@@ -36,9 +36,3 @@ pub struct WettBoiPacket {
     pub fx_order: String,
 }
 
-/// Param change from WebView → plugin (sent via IPC).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ParamChange {
-    pub key: String,
-    pub value: f64,
-}

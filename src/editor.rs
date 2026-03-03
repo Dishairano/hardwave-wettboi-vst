@@ -6,31 +6,27 @@
 //! - **Plugin → WebView**: param state pushed via `evaluate_script()` (Linux/macOS)
 //!   or via a local TCP HTTP server polled by JS (Windows).
 //! - **WebView → Plugin**: `window.__hardwave.setParam(key, value)` calls
-//!   `window.ipc.postMessage()` which routes back through `param_change_tx`.
+//!   `window.ipc.postMessage()` → GuiContext sets the nih-plug param.
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::Receiver;
 use nih_plug::editor::Editor;
-use nih_plug::prelude::ParentWindowHandle;
+use nih_plug::prelude::{GuiContext, ParentWindowHandle, Param};
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::auth;
-use crate::protocol::{ParamChange, WettBoiPacket};
+use crate::params::WettBoiParams;
+use crate::protocol::WettBoiPacket;
 
 const WETTBOI_URL: &str = "https://wettboi.hardwavestudios.com/vst/wettboi";
 const EDITOR_WIDTH: u32 = 1100;
 const EDITOR_HEIGHT: u32 = 700;
 
-/// Wraps a raw-window-handle 0.5 (from nih-plug) so wry can use it via
-/// raw-window-handle 0.6.
-///
-/// On **Linux** the inner value is an Xlib window ID.
-/// On **macOS** it's an `NSView*`.
-/// On **Windows** it's an `HWND`.
+/// Wraps a raw window handle value (usize) so wry can use it via rwh 0.6.
 struct RwhWrapper(usize);
 
-// SAFETY: the pointer/ID outlives the WebView.
 unsafe impl Send for RwhWrapper {}
 unsafe impl Sync for RwhWrapper {}
 
@@ -40,7 +36,7 @@ impl raw_window_handle::HasWindowHandle for RwhWrapper {
 
         #[cfg(target_os = "linux")]
         let raw = {
-            let mut h = raw_window_handle::XlibWindowHandle::new(self.0 as _);
+            let h = raw_window_handle::XlibWindowHandle::new(self.0 as _);
             RawWindowHandle::Xlib(h)
         };
 
@@ -79,22 +75,47 @@ impl raw_window_handle::HasDisplayHandle for RwhWrapper {
     }
 }
 
+/// Build a map of camelCase param keys to ParamPtr for GuiContext param setting.
+fn build_param_map(params: &WettBoiParams) -> HashMap<String, nih_plug::prelude::ParamPtr> {
+    let mut map = HashMap::new();
+    map.insert("enabled".into(), params.enabled.as_ptr());
+    map.insert("wet".into(), params.wet.as_ptr());
+    map.insert("hiPassEnabled".into(), params.hi_pass_enabled.as_ptr());
+    map.insert("hiPassFreq".into(), params.hi_pass_freq.as_ptr());
+    map.insert("loPassEnabled".into(), params.lo_pass_enabled.as_ptr());
+    map.insert("loPassFreq".into(), params.lo_pass_freq.as_ptr());
+    map.insert("attack".into(), params.attack.as_ptr());
+    map.insert("decay".into(), params.decay.as_ptr());
+    map.insert("sustain".into(), params.sustain.as_ptr());
+    map.insert("release".into(), params.release.as_ptr());
+    map.insert("delayEnabled".into(), params.delay_enabled.as_ptr());
+    map.insert("delayTime".into(), params.delay_time.as_ptr());
+    map.insert("delayFeedback".into(), params.delay_feedback.as_ptr());
+    map.insert("delayMix".into(), params.delay_mix.as_ptr());
+    map.insert("reverbEnabled".into(), params.reverb_enabled.as_ptr());
+    map.insert("reverbSize".into(), params.reverb_size.as_ptr());
+    map.insert("reverbDamping".into(), params.reverb_damping.as_ptr());
+    map.insert("reverbMix".into(), params.reverb_mix.as_ptr());
+    map.insert("fxOrder".into(), params.fx_order.as_ptr());
+    map
+}
+
 pub struct WettBoiEditor {
+    params: Arc<WettBoiParams>,
     packet_rx: Arc<Mutex<Receiver<WettBoiPacket>>>,
-    param_change_tx: Arc<Mutex<Sender<ParamChange>>>,
     auth_token: Option<String>,
     size: (u32, u32),
 }
 
 impl WettBoiEditor {
     pub fn new(
+        params: Arc<WettBoiParams>,
         packet_rx: Arc<Mutex<Receiver<WettBoiPacket>>>,
-        param_change_tx: Arc<Mutex<Sender<ParamChange>>>,
         auth_token: Option<String>,
     ) -> Self {
         Self {
+            params,
             packet_rx,
-            param_change_tx,
             auth_token,
             size: (EDITOR_WIDTH, EDITOR_HEIGHT),
         }
@@ -105,27 +126,31 @@ impl Editor for WettBoiEditor {
     fn spawn(
         &self,
         parent: ParentWindowHandle,
-        _context: Arc<dyn nih_plug::prelude::GuiContext>,
+        context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
         let packet_rx = Arc::clone(&self.packet_rx);
-        let param_change_tx = Arc::clone(&self.param_change_tx);
-        let token = self.auth_token.clone();
         let (width, height) = self.size;
 
         // Build the URL with token if available
-        let url = match &token {
+        let url = match &self.auth_token {
             Some(t) => format!("{}?token={}", WETTBOI_URL, t),
             None => WETTBOI_URL.to_string(),
         };
 
+        // Build param map for IPC handler
+        let param_map = Arc::new(build_param_map(&self.params));
+
+        // Extract raw handle value BEFORE spawning threads (ParentWindowHandle isn't Send)
+        let raw_handle = extract_raw_handle(&parent);
+
         #[cfg(target_os = "windows")]
         {
-            spawn_windows(parent, url, width, height, packet_rx, param_change_tx)
+            spawn_windows(raw_handle, url, width, height, packet_rx, context, param_map)
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            spawn_unix(parent, url, width, height, packet_rx, param_change_tx)
+            spawn_unix(raw_handle, url, width, height, packet_rx, context, param_map)
         }
     }
 
@@ -137,16 +162,25 @@ impl Editor for WettBoiEditor {
         false
     }
 
-    fn param_value_changed(&self, _id: &str, _normalized_value: f32) {
-        // We push full state packets at ~30Hz instead of individual changes
-    }
-
+    fn param_value_changed(&self, _id: &str, _normalized_value: f32) {}
     fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {}
     fn param_values_changed(&self) {}
 }
 
+/// Extract the raw handle value from ParentWindowHandle so we can send it across threads.
+fn extract_raw_handle(parent: &ParentWindowHandle) -> usize {
+    match *parent {
+        #[cfg(target_os = "linux")]
+        ParentWindowHandle::X11Window(id) => id as usize,
+        #[cfg(target_os = "macos")]
+        ParentWindowHandle::AppKitNsView(ptr) => ptr as usize,
+        #[cfg(target_os = "windows")]
+        ParentWindowHandle::Win32Hwnd(h) => h as usize,
+        _ => panic!("[WettBoi] unsupported parent window handle"),
+    }
+}
+
 /// IPC init script injected into the WebView.
-/// Provides `window.__hardwave.setParam(key, value)` for the UI to call.
 fn ipc_init_script() -> String {
     r#"
     window.__HARDWAVE_VST = true;
@@ -161,16 +195,41 @@ fn ipc_init_script() -> String {
     "#.to_string()
 }
 
+/// Handle IPC messages from the WebView. Uses GuiContext to properly set nih-plug params.
+fn handle_ipc(
+    context: &Arc<dyn GuiContext>,
+    param_map: &Arc<HashMap<String, nih_plug::prelude::ParamPtr>>,
+    message: &str,
+) {
+    if let Some(rest) = message.strip_prefix("setParam:") {
+        if let Some((key, val_str)) = rest.split_once(':') {
+            if let Ok(value) = val_str.parse::<f64>() {
+                if let Some(&param_ptr) = param_map.get(key) {
+                    // For bool params, value > 0.5 = true (normalized 1.0)
+                    // For float params, we need to convert plain → normalized
+                    let normalized = unsafe { param_ptr.preview_normalized(value as f32) };
+                    context.begin_set_parameter(param_ptr);
+                    context.set_parameter_normalized(param_ptr, normalized);
+                    context.end_set_parameter(param_ptr);
+                }
+            }
+        }
+    } else if let Some(token) = message.strip_prefix("saveToken:") {
+        auth::save_token(token.trim());
+    }
+}
+
 // ─── Windows: TCP packet server approach ────────────────────────────────────
 
 #[cfg(target_os = "windows")]
 fn spawn_windows(
-    parent: ParentWindowHandle,
+    raw_handle: usize,
     url: String,
     width: u32,
     height: u32,
     packet_rx: Arc<Mutex<Receiver<WettBoiPacket>>>,
-    param_change_tx: Arc<Mutex<Sender<ParamChange>>>,
+    context: Arc<dyn GuiContext>,
+    param_map: Arc<HashMap<String, nih_plug::prelude::ParamPtr>>,
 ) -> Box<dyn std::any::Any + Send> {
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -178,7 +237,6 @@ fn spawn_windows(
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = Arc::clone(&running);
 
-    // Start a local HTTP server that serves the latest param state as JSON
     let (port_tx, port_rx) = crossbeam_channel::bounded::<u16>(1);
     let packet_rx_server = Arc::clone(&packet_rx);
     let running_server = Arc::clone(&running);
@@ -192,8 +250,7 @@ fn spawn_windows(
         let mut latest_json = String::from("{}");
 
         while running_server.load(Ordering::Relaxed) {
-            // Update latest packet
-            if let Ok(rx) = packet_rx_server.try_lock() {
+            if let Some(rx) = packet_rx_server.try_lock() {
                 while let Ok(pkt) = rx.try_recv() {
                     if let Ok(json) = serde_json::to_string(&pkt) {
                         latest_json = json;
@@ -201,18 +258,11 @@ fn spawn_windows(
                 }
             }
 
-            // Accept connections
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut buf = [0u8; 1024];
                 let _ = stream.read(&mut buf);
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\n\
-                     Access-Control-Allow-Origin: *\r\n\
-                     Content-Type: application/json\r\n\
-                     Content-Length: {}\r\n\
-                     Connection: close\r\n\
-                     \r\n\
-                     {}",
+                    "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     latest_json.len(),
                     latest_json
                 );
@@ -225,14 +275,8 @@ fn spawn_windows(
 
     let port = port_rx.recv().expect("receive packet server port");
 
-    // Extract raw HWND from nih-plug's ParentWindowHandle
-    let hwnd = match parent {
-        ParentWindowHandle::Win32Hwnd(h) => h as usize,
-        _ => panic!("expected Win32 HWND"),
-    };
-    let wrapper = RwhWrapper(hwnd);
+    let wrapper = RwhWrapper(raw_handle);
 
-    // JS polling script — polls the local HTTP server at ~60fps
     let poll_script = format!(
         r#"
         (function() {{
@@ -250,20 +294,18 @@ fn spawn_windows(
     );
 
     let init_js = format!("{}\n{}", ipc_init_script(), poll_script);
-    let param_tx = Arc::clone(&param_change_tx);
+    let ctx = Arc::clone(&context);
+    let pmap = Arc::clone(&param_map);
 
     let webview = wry::WebViewBuilder::new()
         .with_url(&url)
         .with_initialization_script(&init_js)
         .with_ipc_handler(move |msg| {
-            handle_ipc(&param_tx, &msg.body());
+            handle_ipc(&ctx, &pmap, &msg.body());
         })
         .with_bounds(wry::Rect {
             position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
-            size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(
-                width as f64,
-                height as f64,
-            )),
+            size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(width as f64, height as f64)),
         })
         .build(&wrapper)
         .expect("build WebView");
@@ -280,12 +322,13 @@ fn spawn_windows(
 
 #[cfg(not(target_os = "windows"))]
 fn spawn_unix(
-    parent: ParentWindowHandle,
+    raw_handle: usize,
     url: String,
     width: u32,
     height: u32,
     packet_rx: Arc<Mutex<Receiver<WettBoiPacket>>>,
-    param_change_tx: Arc<Mutex<Sender<ParamChange>>>,
+    context: Arc<dyn GuiContext>,
+    param_map: Arc<HashMap<String, nih_plug::prelude::ParamPtr>>,
 ) -> Box<dyn std::any::Any + Send> {
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = Arc::clone(&running);
@@ -296,33 +339,19 @@ fn spawn_unix(
             let _ = gtk::init();
         }
 
-        // Extract raw handle
-        let raw = match parent {
-            #[cfg(target_os = "linux")]
-            ParentWindowHandle::X11Window(id) => id as usize,
-            #[cfg(target_os = "macos")]
-            ParentWindowHandle::AppKitNsView(ptr) => ptr as usize,
-            _ => {
-                eprintln!("[WettBoi] unsupported parent window handle");
-                return;
-            }
-        };
-
-        let wrapper = RwhWrapper(raw);
-        let param_tx = Arc::clone(&param_change_tx);
+        let wrapper = RwhWrapper(raw_handle);
+        let ctx = Arc::clone(&context);
+        let pmap = Arc::clone(&param_map);
 
         let webview = match wry::WebViewBuilder::new()
             .with_url(&url)
             .with_initialization_script(&ipc_init_script())
             .with_ipc_handler(move |msg| {
-                handle_ipc(&param_tx, &msg.body());
+                handle_ipc(&ctx, &pmap, &msg.body());
             })
             .with_bounds(wry::Rect {
                 position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
-                size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(
-                    width as f64,
-                    height as f64,
-                )),
+                size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(width as f64, height as f64)),
             })
             .build_as_child(&wrapper)
         {
@@ -333,7 +362,6 @@ fn spawn_unix(
             }
         };
 
-        // Push param state via evaluate_script at ~60fps
         while running.load(Ordering::Relaxed) {
             if let Some(rx) = packet_rx.try_lock() {
                 while let Ok(pkt) = rx.try_recv() {
@@ -366,26 +394,6 @@ fn spawn_unix(
     })
 }
 
-/// Handle IPC messages from the WebView.
-fn handle_ipc(param_tx: &Arc<Mutex<Sender<ParamChange>>>, message: &str) {
-    if let Some(rest) = message.strip_prefix("setParam:") {
-        // Format: "setParam:key:value"
-        if let Some((key, val_str)) = rest.split_once(':') {
-            if let Ok(value) = val_str.parse::<f64>() {
-                if let Some(tx) = param_tx.try_lock() {
-                    let _ = tx.try_send(ParamChange {
-                        key: key.to_string(),
-                        value,
-                    });
-                }
-            }
-        }
-    } else if let Some(token) = message.strip_prefix("saveToken:") {
-        auth::save_token(token.trim());
-    }
-}
-
-/// Drop handle — signals the editor to shut down when the DAW closes the plugin window.
 struct EditorHandle {
     running: Arc<AtomicBool>,
     _webview: Option<wry::WebView>,
@@ -393,14 +401,11 @@ struct EditorHandle {
     _editor_thread: Option<std::thread::JoinHandle<()>>,
 }
 
-// SAFETY: wry::WebView is created on the thread that uses it.
-// The handle is only used for dropping (setting running=false).
 unsafe impl Send for EditorHandle {}
 
 impl Drop for EditorHandle {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
-        // Let threads finish naturally
         if let Some(handle) = self._server_thread.take() {
             let _ = handle.join();
         }

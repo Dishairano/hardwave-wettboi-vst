@@ -29,7 +29,6 @@ serde_json = "1"
 # ── Concurrency & atomics ────────────────────────────────────────────────────
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
-atomic_float = "1"
 
 # ── Auth token storage ───────────────────────────────────────────────────────
 dirs = "5"
