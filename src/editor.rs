@@ -176,7 +176,7 @@ fn extract_raw_handle(parent: &ParentWindowHandle) -> usize {
         ParentWindowHandle::AppKitNsView(ptr) => ptr as usize,
         #[cfg(target_os = "windows")]
         ParentWindowHandle::Win32Hwnd(h) => h as usize,
-        _ => panic!("[WettBoi] unsupported parent window handle"),
+        _ => 0, // Fallback — editor will fail gracefully
     }
 }
 
@@ -224,6 +224,13 @@ fn handle_ipc(
 // ─── Windows: TCP packet server approach ────────────────────────────────────
 
 #[cfg(target_os = "windows")]
+fn webview2_data_dir() -> std::path::PathBuf {
+    dirs::data_local_dir()
+        .map(|d| d.join("Hardwave").join("WettBoi").join("WebView2"))
+        .unwrap_or_else(|| std::path::PathBuf::from("C:\\HardwaveWebView2Data"))
+}
+
+#[cfg(target_os = "windows")]
 fn spawn_windows(
     raw_handle: usize,
     url: String,
@@ -244,12 +251,18 @@ fn spawn_windows(
     let running_server = Arc::clone(&running);
 
     let server_thread = std::thread::spawn(move || {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind packet server");
-        let port = listener.local_addr().unwrap().port();
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        let port = match listener.local_addr() {
+            Ok(addr) => addr.port(),
+            Err(_) => return,
+        };
         let _ = port_tx.send(port);
         listener.set_nonblocking(true).ok();
 
-        let mut latest_json = String::from("{}");
+        let mut latest_json = String::from("null");
 
         while running_server.load(Ordering::Relaxed) {
             if let Some(rx) = packet_rx_server.try_lock() {
@@ -264,18 +277,29 @@ fn spawn_windows(
                 let mut buf = [0u8; 1024];
                 let _ = stream.read(&mut buf);
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     latest_json.len(),
                     latest_json
                 );
                 let _ = stream.write_all(response.as_bytes());
             }
 
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     });
 
-    let port = port_rx.recv().expect("receive packet server port");
+    let port = match port_rx.recv() {
+        Ok(p) => p,
+        Err(_) => {
+            return Box::new(EditorHandle {
+                running: running_clone,
+                _webview: None,
+                _web_context: None,
+                _server_thread: Some(server_thread),
+                _editor_thread: None,
+            });
+        }
+    };
 
     let wrapper = RwhWrapper(raw_handle);
 
@@ -299,7 +323,14 @@ fn spawn_windows(
     let ctx = Arc::clone(&context);
     let pmap = Arc::clone(&param_map);
 
-    let webview = wry::WebViewBuilder::new()
+    // Create a writable WebView2 data directory to avoid E_ACCESSDENIED
+    // when the DAW is installed in Program Files (read-only).
+    let data_dir = webview2_data_dir();
+    let _ = std::fs::create_dir_all(&data_dir);
+    let mut web_context = wry::WebContext::new(Some(data_dir));
+
+    let webview = match wry::WebViewBuilder::new()
+        .with_web_context(&mut web_context)
         .with_url(&url)
         .with_initialization_script(&init_js)
         .with_ipc_handler(move |msg| {
@@ -309,12 +340,29 @@ fn spawn_windows(
             position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
             size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(width as f64, height as f64)),
         })
+        .with_transparent(false)
+        .with_devtools(false)
+        .with_background_color((10, 10, 11, 255))
+        .with_additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --allow-insecure-localhost")
         .build(&wrapper)
-        .expect("build WebView");
+    {
+        Ok(wv) => wv,
+        Err(e) => {
+            eprintln!("[WettBoi] failed to create WebView: {}", e);
+            return Box::new(EditorHandle {
+                running: running_clone,
+                _webview: None,
+                _web_context: Some(web_context),
+                _server_thread: Some(server_thread),
+                _editor_thread: None,
+            });
+        }
+    };
 
     Box::new(EditorHandle {
         running: running_clone,
         _webview: Some(webview),
+        _web_context: Some(web_context),
         _server_thread: Some(server_thread),
         _editor_thread: None,
     })
@@ -391,6 +439,7 @@ fn spawn_unix(
     Box::new(EditorHandle {
         running: running_clone,
         _webview: None,
+        _web_context: None,
         _server_thread: None,
         _editor_thread: Some(editor_thread),
     })
@@ -399,6 +448,7 @@ fn spawn_unix(
 struct EditorHandle {
     running: Arc<AtomicBool>,
     _webview: Option<wry::WebView>,
+    _web_context: Option<wry::WebContext>,
     _server_thread: Option<std::thread::JoinHandle<()>>,
     _editor_thread: Option<std::thread::JoinHandle<()>>,
 }
