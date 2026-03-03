@@ -131,10 +131,11 @@ impl Editor for WettBoiEditor {
         let packet_rx = Arc::clone(&self.packet_rx);
         let (width, height) = self.size;
 
-        // Build the URL with token if available
+        // Build the URL with token and version
+        let version = env!("CARGO_PKG_VERSION");
         let url = match &self.auth_token {
-            Some(t) => format!("{}?token={}", WETTBOI_URL, t),
-            None => WETTBOI_URL.to_string(),
+            Some(t) => format!("{}?token={}&v={}", WETTBOI_URL, t, version),
+            None => format!("{}?v={}", WETTBOI_URL, version),
         };
 
         // Build param map for IPC handler
@@ -182,20 +183,24 @@ fn extract_raw_handle(parent: &ParentWindowHandle) -> usize {
 
 /// IPC init script injected into the WebView.
 fn ipc_init_script() -> String {
-    r#"
+    format!(
+        r#"
     window.__HARDWAVE_VST = true;
-    window.__hardwave = {
-        setParam: function(key, value) {
+    window.__HARDWAVE_VST_VERSION = '{}';
+    window.__hardwave = {{
+        setParam: function(key, value) {{
             var v = value;
             if (typeof v === 'boolean') v = v ? 1 : 0;
             if (key === 'fxOrder') v = (v === 'delay-reverb') ? 0 : 1;
             window.ipc.postMessage('setParam:' + key + ':' + v);
-        },
-        saveToken: function(token) {
+        }},
+        saveToken: function(token) {{
             window.ipc.postMessage('saveToken:' + token);
-        }
-    };
-    "#.to_string()
+        }}
+    }};
+    "#,
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// Handle IPC messages from the WebView. Uses GuiContext to properly set nih-plug params.
