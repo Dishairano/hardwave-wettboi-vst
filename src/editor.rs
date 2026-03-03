@@ -208,9 +208,9 @@ fn handle_ipc(
                     // For bool params, value > 0.5 = true (normalized 1.0)
                     // For float params, we need to convert plain → normalized
                     let normalized = unsafe { param_ptr.preview_normalized(value as f32) };
-                    context.begin_set_parameter(param_ptr);
-                    context.set_parameter_normalized(param_ptr, normalized);
-                    context.end_set_parameter(param_ptr);
+                    context.raw_begin_set_parameter(param_ptr);
+                    context.raw_set_parameter_normalized(param_ptr, normalized);
+                    context.raw_end_set_parameter(param_ptr);
                 }
             }
         }
