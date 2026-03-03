@@ -4,7 +4,6 @@
 //! nih-plug parameter here so the DAW can automate / save / recall them.
 
 use nih_plug::prelude::*;
-use std::sync::Arc;
 
 /// FX chain order (delay → reverb vs reverb → delay).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]

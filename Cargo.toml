@@ -34,6 +34,9 @@ atomic_float = "1"
 # ── Auth token storage ───────────────────────────────────────────────────────
 dirs = "5"
 
+# ── raw-window-handle bridge (nih-plug uses 0.5, wry uses 0.6) ──────────────
+raw-window-handle = "0.6"
+
 # ── Linux GTK (required by wry on X11/Wayland) ──────────────────────────────
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"

@@ -34,60 +34,48 @@ struct RwhWrapper(usize);
 unsafe impl Send for RwhWrapper {}
 unsafe impl Sync for RwhWrapper {}
 
-#[cfg(target_os = "linux")]
-unsafe impl raw_window_handle_06::HasRawWindowHandle for RwhWrapper {
-    fn raw_window_handle(&self) -> raw_window_handle_06::RawWindowHandle {
-        let mut h = raw_window_handle_06::XlibWindowHandle::empty();
-        h.window = self.0 as _;
-        raw_window_handle_06::RawWindowHandle::Xlib(h)
+impl raw_window_handle::HasWindowHandle for RwhWrapper {
+    fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        use raw_window_handle::RawWindowHandle;
+
+        #[cfg(target_os = "linux")]
+        let raw = {
+            let mut h = raw_window_handle::XlibWindowHandle::new(self.0 as _);
+            RawWindowHandle::Xlib(h)
+        };
+
+        #[cfg(target_os = "macos")]
+        let raw = {
+            let ns_view = std::ptr::NonNull::new(self.0 as *mut _).expect("null NSView");
+            let h = raw_window_handle::AppKitWindowHandle::new(ns_view);
+            RawWindowHandle::AppKit(h)
+        };
+
+        #[cfg(target_os = "windows")]
+        let raw = {
+            let hwnd = std::ptr::NonNull::new(self.0 as *mut _).expect("null HWND");
+            let h = raw_window_handle::Win32WindowHandle::new(hwnd);
+            RawWindowHandle::Win32(h)
+        };
+
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw) })
     }
 }
 
-#[cfg(target_os = "linux")]
-unsafe impl raw_window_handle_06::HasRawDisplayHandle for RwhWrapper {
-    fn raw_display_handle(&self) -> raw_window_handle_06::RawDisplayHandle {
-        // GTK already opened the display — passing null tells wry to use the
-        // default X11 display.
-        let h = raw_window_handle_06::XlibDisplayHandle::empty();
-        raw_window_handle_06::RawDisplayHandle::Xlib(h)
-    }
-}
+impl raw_window_handle::HasDisplayHandle for RwhWrapper {
+    fn display_handle(&self) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        use raw_window_handle::RawDisplayHandle;
 
-#[cfg(target_os = "macos")]
-unsafe impl raw_window_handle_06::HasRawWindowHandle for RwhWrapper {
-    fn raw_window_handle(&self) -> raw_window_handle_06::RawWindowHandle {
-        let mut h = raw_window_handle_06::AppKitWindowHandle::empty();
-        h.ns_view = std::ptr::NonNull::new(self.0 as *mut _)
-            .expect("null NSView");
-        raw_window_handle_06::RawWindowHandle::AppKit(h)
-    }
-}
+        #[cfg(target_os = "linux")]
+        let raw = RawDisplayHandle::Xlib(raw_window_handle::XlibDisplayHandle::new(None, 0));
 
-#[cfg(target_os = "macos")]
-unsafe impl raw_window_handle_06::HasRawDisplayHandle for RwhWrapper {
-    fn raw_display_handle(&self) -> raw_window_handle_06::RawDisplayHandle {
-        raw_window_handle_06::RawDisplayHandle::AppKit(
-            raw_window_handle_06::AppKitDisplayHandle::empty(),
-        )
-    }
-}
+        #[cfg(target_os = "macos")]
+        let raw = RawDisplayHandle::AppKit(raw_window_handle::AppKitDisplayHandle::new());
 
-#[cfg(target_os = "windows")]
-unsafe impl raw_window_handle_06::HasRawWindowHandle for RwhWrapper {
-    fn raw_window_handle(&self) -> raw_window_handle_06::RawWindowHandle {
-        let mut h = raw_window_handle_06::Win32WindowHandle::empty();
-        h.hwnd = std::ptr::NonNull::new(self.0 as *mut _)
-            .expect("null HWND");
-        raw_window_handle_06::RawWindowHandle::Win32(h)
-    }
-}
+        #[cfg(target_os = "windows")]
+        let raw = RawDisplayHandle::Windows(raw_window_handle::WindowsDisplayHandle::new());
 
-#[cfg(target_os = "windows")]
-unsafe impl raw_window_handle_06::HasRawDisplayHandle for RwhWrapper {
-    fn raw_display_handle(&self) -> raw_window_handle_06::RawDisplayHandle {
-        raw_window_handle_06::RawDisplayHandle::Windows(
-            raw_window_handle_06::WindowsDisplayHandle::empty(),
-        )
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(raw) })
     }
 }
 
