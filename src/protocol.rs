@@ -33,6 +33,6 @@ pub struct WettBoiPacket {
     pub reverb_damping: f32,
     pub reverb_mix: f32,
 
-    pub fx_order: String,
+    pub fx_order: &'static str,
 }
 

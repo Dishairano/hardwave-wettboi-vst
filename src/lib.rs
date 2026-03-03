@@ -295,8 +295,8 @@ impl Plugin for HardwaveWettBoi {
                 reverb_damping: reverb_damp,
                 reverb_mix,
                 fx_order: match fx_order {
-                    FxOrder::DelayReverb => "delay-reverb".to_string(),
-                    FxOrder::ReverbDelay => "reverb-delay".to_string(),
+                    FxOrder::DelayReverb => "delay-reverb",
+                    FxOrder::ReverbDelay => "reverb-delay",
                 },
             };
             let _ = self.editor_packet_tx.try_send(packet);

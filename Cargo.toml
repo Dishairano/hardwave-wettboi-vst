@@ -17,7 +17,7 @@ gui = ["dep:wry"]
 
 [dependencies]
 # ── nih-plug (VST3 / CLAP framework) ─────────────────────────────────────────
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["assert_process_allocs"] }
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git" }
 
 # ── GUI: wry WebView ─────────────────────────────────────────────────────────
 wry = { version = "0.46", optional = true }
@@ -42,4 +42,3 @@ gtk = "0.18"
 
 [profile.release]
 lto = "thin"
-strip = "symbols"
