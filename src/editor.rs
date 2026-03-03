@@ -186,7 +186,10 @@ fn ipc_init_script() -> String {
     window.__HARDWAVE_VST = true;
     window.__hardwave = {
         setParam: function(key, value) {
-            window.ipc.postMessage('setParam:' + key + ':' + value);
+            var v = value;
+            if (typeof v === 'boolean') v = v ? 1 : 0;
+            if (key === 'fxOrder') v = (v === 'delay-reverb') ? 0 : 1;
+            window.ipc.postMessage('setParam:' + key + ':' + v);
         },
         saveToken: function(token) {
             window.ipc.postMessage('saveToken:' + token);
