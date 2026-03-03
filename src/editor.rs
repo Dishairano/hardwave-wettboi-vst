@@ -343,7 +343,7 @@ fn spawn_windows(
         })
         .with_transparent(false)
         .with_devtools(false)
-        .with_background_color(wry::RGBA { r: 10, g: 10, b: 11, a: 255 })
+        .with_background_color((10, 10, 11, 255))
         .with_additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --allow-insecure-localhost")
         .build(&wrapper)
     {
