@@ -8,6 +8,7 @@
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 use nih_plug::prelude::*;
+use nih_plug::params::Param;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -338,33 +339,31 @@ impl Plugin for HardwaveWettBoi {
 
 impl HardwaveWettBoi {
     /// Apply a parameter change received from the WebView UI.
+    /// Uses `set_plain_value` from the `Param` trait to update nih-plug params.
     fn apply_param_change(&self, change: &ParamChange) {
+        let v = change.value as f32;
         match change.key.as_str() {
-            "enabled" => self.params.enabled.set_value(change.value > 0.5),
-            "wet" => self.params.wet.set_value(change.value as f32),
-            "hiPassEnabled" => self.params.hi_pass_enabled.set_value(change.value > 0.5),
-            "hiPassFreq" => self.params.hi_pass_freq.set_value(change.value as f32),
-            "loPassEnabled" => self.params.lo_pass_enabled.set_value(change.value > 0.5),
-            "loPassFreq" => self.params.lo_pass_freq.set_value(change.value as f32),
-            "attack" => self.params.attack.set_value(change.value as f32),
-            "decay" => self.params.decay.set_value(change.value as f32),
-            "sustain" => self.params.sustain.set_value(change.value as f32),
-            "release" => self.params.release.set_value(change.value as f32),
-            "delayEnabled" => self.params.delay_enabled.set_value(change.value > 0.5),
-            "delayTime" => self.params.delay_time.set_value(change.value as f32),
-            "delayFeedback" => self.params.delay_feedback.set_value(change.value as f32),
-            "delayMix" => self.params.delay_mix.set_value(change.value as f32),
-            "reverbEnabled" => self.params.reverb_enabled.set_value(change.value > 0.5),
-            "reverbSize" => self.params.reverb_size.set_value(change.value as f32),
-            "reverbDamping" => self.params.reverb_damping.set_value(change.value as f32),
-            "reverbMix" => self.params.reverb_mix.set_value(change.value as f32),
+            "enabled" => self.params.enabled.set_plain_value(if change.value > 0.5 { 1.0 } else { 0.0 }),
+            "wet" => self.params.wet.set_plain_value(v),
+            "hiPassEnabled" => self.params.hi_pass_enabled.set_plain_value(if change.value > 0.5 { 1.0 } else { 0.0 }),
+            "hiPassFreq" => self.params.hi_pass_freq.set_plain_value(v),
+            "loPassEnabled" => self.params.lo_pass_enabled.set_plain_value(if change.value > 0.5 { 1.0 } else { 0.0 }),
+            "loPassFreq" => self.params.lo_pass_freq.set_plain_value(v),
+            "attack" => self.params.attack.set_plain_value(v),
+            "decay" => self.params.decay.set_plain_value(v),
+            "sustain" => self.params.sustain.set_plain_value(v),
+            "release" => self.params.release.set_plain_value(v),
+            "delayEnabled" => self.params.delay_enabled.set_plain_value(if change.value > 0.5 { 1.0 } else { 0.0 }),
+            "delayTime" => self.params.delay_time.set_plain_value(v),
+            "delayFeedback" => self.params.delay_feedback.set_plain_value(v),
+            "delayMix" => self.params.delay_mix.set_plain_value(v),
+            "reverbEnabled" => self.params.reverb_enabled.set_plain_value(if change.value > 0.5 { 1.0 } else { 0.0 }),
+            "reverbSize" => self.params.reverb_size.set_plain_value(v),
+            "reverbDamping" => self.params.reverb_damping.set_plain_value(v),
+            "reverbMix" => self.params.reverb_mix.set_plain_value(v),
             "fxOrder" => {
                 // 0 = delay-reverb, 1 = reverb-delay
-                if change.value > 0.5 {
-                    self.params.fx_order.set_value(FxOrder::ReverbDelay);
-                } else {
-                    self.params.fx_order.set_value(FxOrder::DelayReverb);
-                }
+                self.params.fx_order.set_plain_value(if change.value > 0.5 { 1.0 } else { 0.0 });
             }
             _ => {}
         }

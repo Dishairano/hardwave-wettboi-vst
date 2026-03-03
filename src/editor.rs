@@ -335,7 +335,7 @@ fn spawn_unix(
 
         // Push param state via evaluate_script at ~60fps
         while running.load(Ordering::Relaxed) {
-            if let Ok(rx) = packet_rx.try_lock() {
+            if let Some(rx) = packet_rx.try_lock() {
                 while let Ok(pkt) = rx.try_recv() {
                     if let Ok(json) = serde_json::to_string(&pkt) {
                         let js = format!(
@@ -372,7 +372,7 @@ fn handle_ipc(param_tx: &Arc<Mutex<Sender<ParamChange>>>, message: &str) {
         // Format: "setParam:key:value"
         if let Some((key, val_str)) = rest.split_once(':') {
             if let Ok(value) = val_str.parse::<f64>() {
-                if let Ok(tx) = param_tx.try_lock() {
+                if let Some(tx) = param_tx.try_lock() {
                     let _ = tx.try_send(ParamChange {
                         key: key.to_string(),
                         value,
