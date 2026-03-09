@@ -196,6 +196,9 @@ fn ipc_init_script() -> String {
         }},
         saveToken: function(token) {{
             window.ipc.postMessage('saveToken:' + token);
+        }},
+        openSuite: function() {{
+            window.ipc.postMessage('openSuite');
         }}
     }};
     "#,
@@ -226,6 +229,41 @@ fn handle_ipc(
         }
     } else if let Some(token) = message.strip_prefix("saveToken:") {
         auth::save_token(token.trim());
+    } else if message.trim() == "openSuite" {
+        open_suite();
+    }
+}
+
+/// Try to launch the Hardwave Suite desktop app.
+fn open_suite() {
+    #[cfg(target_os = "windows")]
+    {
+        // Try common install locations
+        let paths = [
+            dirs::data_local_dir().map(|d| d.join("Hardwave Suite").join("Hardwave Suite.exe")),
+            Some(std::path::PathBuf::from(r"C:\Program Files\Hardwave Suite\Hardwave Suite.exe")),
+            dirs::desktop_dir().map(|d| d.join("Hardwave Suite.lnk")),
+        ];
+        for path in paths.iter().flatten() {
+            if path.exists() {
+                let _ = std::process::Command::new(path).spawn();
+                return;
+            }
+        }
+        // Fallback: try to open via shell (if it's in PATH or has a Start Menu entry)
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", "hardwave-suite"])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .args(["-a", "Hardwave Suite"])
+            .spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("hardwave-suite").spawn();
     }
 }
 
