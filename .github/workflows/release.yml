@@ -79,8 +79,58 @@ jobs:
           name: hardwave-wettboi-windows-x64
           path: target/bundled/hardwave-wettboi-windows-x64.zip
 
+  build-macos-x64:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Build
+        run: cargo xtask bundle hardwave-wettboi --release --target x86_64-apple-darwin
+
+      - name: Package
+        run: |
+          cd target/bundled
+          tar -czvf hardwave-wettboi-macos-x64.tar.gz hardwave-wettboi.vst3 hardwave-wettboi.clap
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardwave-wettboi-macos-x64
+          path: target/bundled/hardwave-wettboi-macos-x64.tar.gz
+
+  build-macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build
+        run: cargo xtask bundle hardwave-wettboi --release --target aarch64-apple-darwin
+
+      - name: Package
+        run: |
+          cd target/bundled
+          tar -czvf hardwave-wettboi-macos-arm64.tar.gz hardwave-wettboi.vst3 hardwave-wettboi.clap
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardwave-wettboi-macos-arm64
+          path: target/bundled/hardwave-wettboi-macos-arm64.tar.gz
+
   release:
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-macos-x64, build-macos-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -93,6 +143,9 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
 
       - name: Get version
         id: version
@@ -114,6 +167,8 @@ jobs:
           files: |
             artifacts/hardwave-wettboi-linux-x64/*.tar.gz
             artifacts/hardwave-wettboi-windows-x64/*.zip
+            artifacts/hardwave-wettboi-macos-x64/*.tar.gz
+            artifacts/hardwave-wettboi-macos-arm64/*.tar.gz
           body: |
             ## WettBoi ${{ steps.version.outputs.version }}
 
@@ -123,8 +178,10 @@ jobs:
 
             | Platform | File |
             |----------|------|
-            | Linux x64 | `hardwave-wettboi-linux-x64.tar.gz` |
             | Windows x64 | `hardwave-wettboi-windows-x64.zip` |
+            | Linux x64 | `hardwave-wettboi-linux-x64.tar.gz` |
+            | macOS x64 (Intel) | `hardwave-wettboi-macos-x64.tar.gz` |
+            | macOS arm64 (Apple Silicon) | `hardwave-wettboi-macos-arm64.tar.gz` |
 
             ### Installation
 
@@ -133,6 +190,19 @@ jobs:
             2. Copy `hardwave-wettboi.vst3` folder to `C:\Program Files\Common Files\VST3\`
             3. Copy `hardwave-wettboi.clap` to `C:\Program Files\Common Files\CLAP\`
 
+            **macOS:**
+            1. Extract: `tar -xzf hardwave-wettboi-macos-*.tar.gz`
+            2. Copy `hardwave-wettboi.vst3` to `~/Library/Audio/Plug-Ins/VST3/`
+            3. Copy `hardwave-wettboi.clap` to `~/Library/Audio/Plug-Ins/CLAP/`
+
             **Linux:**
             1. Extract: `tar -xzf hardwave-wettboi-linux-x64.tar.gz`
             2. Copy to `~/.vst3/` and `~/.clap/`
+
+      - name: Sync version to WettBoi server
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer ${{ secrets.DEPLOY_SECRET }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"slug\":\"wettboi\",\"version\":\"${{ steps.version.outputs.version }}\"}" \
+            https://wettboi.hardwavestudios.com/api/updates/version-sync
