@@ -200,6 +200,7 @@ jobs:
             2. Copy to `~/.vst3/` and `~/.clap/`
 
       - name: Sync version to WettBoi server
+        continue-on-error: true
         run: |
           curl -sf -X POST \
             -H "Authorization: Bearer ${{ secrets.DEPLOY_SECRET }}" \
