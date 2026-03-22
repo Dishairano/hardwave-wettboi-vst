@@ -3,7 +3,7 @@ members = ["xtask"]
 
 [package]
 name = "hardwave-wettboi"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 license = "Proprietary"
 description = "WettBoi — wet signal processor VST3/CLAP plugin by Hardwave Studios"
