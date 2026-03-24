@@ -73,17 +73,17 @@ impl Plugin for HardwaveWettBoi {
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
-        // Stereo in + stereo out, with optional stereo sidechain
+        // Stereo in + stereo out (default — works in all DAWs)
         AudioIOLayout {
             main_input_channels: NonZeroU32::new(2),
             main_output_channels: NonZeroU32::new(2),
-            aux_input_ports: &[new_nonzero_u32(2)], // sidechain input
             ..AudioIOLayout::const_default()
         },
-        // Stereo in + stereo out, no sidechain
+        // Stereo in + stereo out, with stereo sidechain input
         AudioIOLayout {
             main_input_channels: NonZeroU32::new(2),
             main_output_channels: NonZeroU32::new(2),
+            aux_input_ports: &[new_nonzero_u32(2)],
             ..AudioIOLayout::const_default()
         },
     ];
