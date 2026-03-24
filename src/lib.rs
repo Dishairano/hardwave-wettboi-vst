@@ -22,7 +22,7 @@ mod protocol;
 
 use dsp::{Reverb, StereoDelay, SidechainDetector, Lfo};
 use dsp::lfo::Shape as LfoShape;
-use params::{WettBoiParams, NoteDiv, LfoTarget};
+use params::{WettBoiParams, LfoTarget};
 use protocol::WbPacket;
 
 struct HardwaveWettBoi {
@@ -134,10 +134,9 @@ impl Plugin for HardwaveWettBoi {
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         // Read transport BPM
-        if let Some(transport) = context.transport() {
-            if let Some(tempo) = transport.tempo {
-                self.bpm = tempo as f32;
-            }
+        let transport = context.transport();
+        if let Some(tempo) = transport.tempo {
+            self.bpm = tempo as f32;
         }
 
         // Read all params
@@ -230,8 +229,9 @@ impl Plugin for HardwaveWettBoi {
             // Determine sidechain input
             let sc_input = match sc_source {
                 params::ScSource::Sidechain if has_sidechain => {
-                    let sc_l = *aux.inputs[0].channel_slice(0).get(sample_idx).unwrap_or(&0.0);
-                    let sc_r = *aux.inputs[0].channel_slice(1).get(sample_idx).unwrap_or(&0.0);
+                    let sc_buf = aux.inputs[0].as_slice_immutable();
+                    let sc_l = *sc_buf.get(0).and_then(|ch| ch.get(sample_idx)).unwrap_or(&0.0);
+                    let sc_r = *sc_buf.get(1).and_then(|ch| ch.get(sample_idx)).unwrap_or(&0.0);
                     (sc_l + sc_r) * 0.5
                 }
                 _ => {
@@ -260,11 +260,10 @@ impl Plugin for HardwaveWettBoi {
                 LfoTarget::DlyWet => (dly_wet + lfo_val * 0.5).clamp(0.0, 1.0),
                 _ => dly_wet,
             };
-            let mod_dly_fb = match lfo_target {
+            let _mod_dly_fb = match lfo_target {
                 LfoTarget::DlyFeedback => {
                     self.delay.set_feedback((dly_feedback + lfo_val * 30.0).clamp(0.0, 95.0));
-                    dly_feedback // feedback already set on the delay
-                }
+                    dly_feedback
                 _ => dly_feedback,
             };
             // Filter modulation: shift delay LP

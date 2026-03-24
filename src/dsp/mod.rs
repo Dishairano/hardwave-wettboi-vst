@@ -10,4 +10,3 @@ pub use reverb::Reverb;
 pub use delay::StereoDelay;
 pub use sidechain::SidechainDetector;
 pub use lfo::Lfo;
-pub use filters::{OnePoleLP, OnePoleSVF};
