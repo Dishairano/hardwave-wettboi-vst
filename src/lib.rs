@@ -264,6 +264,7 @@ impl Plugin for HardwaveWettBoi {
                 LfoTarget::DlyFeedback => {
                     self.delay.set_feedback((dly_feedback + lfo_val * 30.0).clamp(0.0, 95.0));
                     dly_feedback
+                }
                 _ => dly_feedback,
             };
             // Filter modulation: shift delay LP
