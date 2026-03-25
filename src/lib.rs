@@ -47,9 +47,10 @@ struct HardwaveWettBoi {
 
 impl Default for HardwaveWettBoi {
     fn default() -> Self {
+        eprintln!("[HardwaveWettBoi] default() — constructing plugin");
         let sr = 44100.0;
         let (pkt_tx, pkt_rx) = crossbeam_channel::bounded(4);
-        Self {
+        let inst = Self {
             params: Arc::new(WettBoiParams::default()),
             reverb: Reverb::new(sr),
             delay: StereoDelay::new(sr),
@@ -61,7 +62,9 @@ impl Default for HardwaveWettBoi {
             sample_rate: sr,
             bpm: 150.0,
             duck_depth: 0.0,
-        }
+        };
+        eprintln!("[HardwaveWettBoi] default() — construction complete");
+        inst
     }
 }
 
@@ -96,6 +99,7 @@ impl Plugin for HardwaveWettBoi {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        eprintln!("[HardwaveWettBoi] editor() — creating editor handle");
         let token = auth::load_token();
         Some(Box::new(editor::WettBoiEditor::new(
             Arc::clone(&self.params),
@@ -110,12 +114,14 @@ impl Plugin for HardwaveWettBoi {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
+        eprintln!("[HardwaveWettBoi] initialize() — sr={}", buffer_config.sample_rate);
         let sr = buffer_config.sample_rate;
         self.sample_rate = sr;
         self.reverb.set_sample_rate(sr);
         self.delay.set_sample_rate(sr);
         self.sidechain.set_sample_rate(sr);
         self.lfo.set_sample_rate(sr);
+        eprintln!("[HardwaveWettBoi] initialize() — complete");
         true
     }
 
