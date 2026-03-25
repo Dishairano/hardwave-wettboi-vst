@@ -11,7 +11,6 @@
 use crossbeam_channel::{Sender, Receiver};
 use nih_plug::prelude::*;
 use parking_lot::Mutex;
-use std::num::NonZeroU32;
 use std::sync::Arc;
 
 mod auth;
@@ -75,21 +74,13 @@ impl Plugin for HardwaveWettBoi {
     const EMAIL: &'static str = "hello@hardwavestudios.com";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
-        // Stereo in + stereo out (default — works in all DAWs)
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(2),
-            main_output_channels: NonZeroU32::new(2),
-            ..AudioIOLayout::const_default()
-        },
-        // Stereo in + stereo out, with stereo sidechain input
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(2),
-            main_output_channels: NonZeroU32::new(2),
-            aux_input_ports: &[new_nonzero_u32(2)],
-            ..AudioIOLayout::const_default()
-        },
-    ];
+    // Single stereo layout — FL Studio rejects plugins with multiple layouts.
+    // Sidechain is handled at runtime by checking if aux buffers are available.
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: NonZeroU32::new(2),
+        main_output_channels: NonZeroU32::new(2),
+        ..AudioIOLayout::const_default()
+    }];
 
     type SysExMessage = ();
     type BackgroundTask = ();
@@ -351,10 +342,3 @@ impl Vst3Plugin for HardwaveWettBoi {
 
 nih_export_clap!(HardwaveWettBoi);
 nih_export_vst3!(HardwaveWettBoi);
-
-const fn new_nonzero_u32(n: u32) -> NonZeroU32 {
-    match NonZeroU32::new(n) {
-        Some(v) => v,
-        None => panic!("zero"),
-    }
-}

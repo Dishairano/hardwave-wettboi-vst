@@ -455,7 +455,19 @@ fn spawn_windows(
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = Arc::clone(&running);
 
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind TCP");
+    let listener = match TcpListener::bind("127.0.0.1:0") {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("[HardwaveWettBoi] failed to bind TCP: {}", e);
+            return Box::new(EditorHandle {
+                running: running_clone,
+                _webview: None,
+                _web_context: None,
+                _server_thread: None,
+                _editor_thread: None,
+            });
+        }
+    };
     let port = listener.local_addr().unwrap().port();
     let latest_json = Arc::new(Mutex::new(String::from("{}")));
     let latest_json_server = Arc::clone(&latest_json);
