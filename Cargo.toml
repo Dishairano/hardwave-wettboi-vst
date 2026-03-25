@@ -3,7 +3,7 @@ members = ["xtask"]
 
 [package]
 name = "hardwave-wettboi"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "Proprietary"
 description = "Hardwave WettBoi — sidechain reverb & delay VST3/CLAP plugin by Hardwave Studios"
@@ -12,7 +12,7 @@ description = "Hardwave WettBoi — sidechain reverb & delay VST3/CLAP plugin by
 crate-type = ["cdylib"]
 
 [features]
-default = ["gui"]
+default = []
 gui = ["dep:wry"]
 
 [dependencies]

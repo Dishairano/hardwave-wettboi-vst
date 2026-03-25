@@ -8,20 +8,27 @@
 //! an external sidechain). An LFO can modulate the reverb wet, delay wet,
 //! delay feedback, or a filter parameter.
 
-use crossbeam_channel::{Sender, Receiver};
 use nih_plug::prelude::*;
-use parking_lot::Mutex;
 use std::sync::Arc;
 
+#[cfg(feature = "gui")]
+use crossbeam_channel::{Sender, Receiver};
+#[cfg(feature = "gui")]
+use parking_lot::Mutex;
+
+#[cfg(feature = "gui")]
 mod auth;
 mod dsp;
+#[cfg(feature = "gui")]
 mod editor;
 mod params;
+#[cfg(feature = "gui")]
 mod protocol;
 
 use dsp::{Reverb, StereoDelay, SidechainDetector, Lfo};
 use dsp::lfo::Shape as LfoShape;
 use params::{WettBoiParams, LfoTarget};
+#[cfg(feature = "gui")]
 use protocol::WbPacket;
 
 struct HardwaveWettBoi {
@@ -34,8 +41,11 @@ struct HardwaveWettBoi {
     lfo: Lfo,
 
     // Editor communication
+    #[cfg(feature = "gui")]
     editor_packet_tx: Sender<WbPacket>,
+    #[cfg(feature = "gui")]
     editor_packet_rx: Arc<Mutex<Receiver<WbPacket>>>,
+    #[cfg(feature = "gui")]
     update_counter: u32,
 
     // State
@@ -46,24 +56,25 @@ struct HardwaveWettBoi {
 
 impl Default for HardwaveWettBoi {
     fn default() -> Self {
-        eprintln!("[HardwaveWettBoi] default() — constructing plugin");
         let sr = 44100.0;
+        #[cfg(feature = "gui")]
         let (pkt_tx, pkt_rx) = crossbeam_channel::bounded(4);
-        let inst = Self {
+        Self {
             params: Arc::new(WettBoiParams::default()),
             reverb: Reverb::new(sr),
             delay: StereoDelay::new(sr),
             sidechain: SidechainDetector::new(sr),
             lfo: Lfo::new(sr),
+            #[cfg(feature = "gui")]
             editor_packet_tx: pkt_tx,
+            #[cfg(feature = "gui")]
             editor_packet_rx: Arc::new(Mutex::new(pkt_rx)),
+            #[cfg(feature = "gui")]
             update_counter: 0,
             sample_rate: sr,
             bpm: 150.0,
             duck_depth: 0.0,
-        };
-        eprintln!("[HardwaveWettBoi] default() — construction complete");
-        inst
+        }
     }
 }
 
@@ -170,6 +181,7 @@ impl Plugin for HardwaveWettBoi {
         let bypass = p.bypass.value();
 
         // Snapshot for editor
+        #[cfg(feature = "gui")]
         let pkt_snapshot = editor::snapshot_params(p, self.bpm, self.duck_depth);
 
         // Update DSP parameters
@@ -299,12 +311,15 @@ impl Plugin for HardwaveWettBoi {
         }
 
         // Send state packet to editor (~60 fps)
-        self.update_counter += 1;
-        if self.update_counter >= 4 {
-            self.update_counter = 0;
-            let mut packet = pkt_snapshot;
-            packet.sc_duck_depth = self.duck_depth;
-            let _ = self.editor_packet_tx.try_send(packet);
+        #[cfg(feature = "gui")]
+        {
+            self.update_counter += 1;
+            if self.update_counter >= 4 {
+                self.update_counter = 0;
+                let mut packet = pkt_snapshot;
+                packet.sc_duck_depth = self.duck_depth;
+                let _ = self.editor_packet_tx.try_send(packet);
+            }
         }
 
         ProcessStatus::Normal
