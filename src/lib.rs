@@ -1,19 +1,39 @@
+//! Hardwave WettBoi — sidechain reverb & delay VST3/CLAP plugin.
+//!
+//! Signal chain:
+//!   Input → Reverb (wet) + Delay (wet) → Sidechain Duck → LFO Modulation → Mix → Output
+
+use crossbeam_channel::{Sender, Receiver};
 use nih_plug::prelude::*;
+use parking_lot::Mutex;
 use std::sync::Arc;
 
+mod auth;
 mod dsp;
+mod editor;
 mod params;
+mod protocol;
 
 use dsp::{Reverb, StereoDelay, SidechainDetector, Lfo};
 use dsp::lfo::Shape as LfoShape;
 use params::{WettBoiParams, LfoTarget};
+use protocol::WbPacket;
 
 struct HardwaveWettBoi {
     params: Arc<WettBoiParams>,
+
+    // DSP modules
     reverb: Reverb,
     delay: StereoDelay,
     sidechain: SidechainDetector,
     lfo: Lfo,
+
+    // Editor communication
+    editor_packet_tx: Sender<WbPacket>,
+    editor_packet_rx: Arc<Mutex<Receiver<WbPacket>>>,
+    update_counter: u32,
+
+    // State
     sample_rate: f32,
     bpm: f32,
     duck_depth: f32,
@@ -22,12 +42,16 @@ struct HardwaveWettBoi {
 impl Default for HardwaveWettBoi {
     fn default() -> Self {
         let sr = 44100.0;
+        let (pkt_tx, pkt_rx) = crossbeam_channel::bounded(4);
         Self {
             params: Arc::new(WettBoiParams::default()),
             reverb: Reverb::new(sr),
             delay: StereoDelay::new(sr),
             sidechain: SidechainDetector::new(sr),
             lfo: Lfo::new(sr),
+            editor_packet_tx: pkt_tx,
+            editor_packet_rx: Arc::new(Mutex::new(pkt_rx)),
+            update_counter: 0,
             sample_rate: sr,
             bpm: 150.0,
             duck_depth: 0.0,
@@ -53,6 +77,15 @@ impl Plugin for HardwaveWettBoi {
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
+    }
+
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        let token = auth::load_token();
+        Some(Box::new(editor::WettBoiEditor::new(
+            Arc::clone(&self.params),
+            Arc::clone(&self.editor_packet_rx),
+            token,
+        )))
     }
 
     fn initialize(
@@ -81,7 +114,7 @@ impl Plugin for HardwaveWettBoi {
     fn process(
         &mut self,
         buffer: &mut Buffer,
-        _aux: &mut AuxiliaryBuffers,
+        aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let transport = context.transport();
@@ -102,6 +135,7 @@ impl Plugin for HardwaveWettBoi {
         let sc_attack = p.sc_attack.value();
         let sc_hold = p.sc_hold.value();
         let sc_release = p.sc_release.value();
+        let sc_source = p.sc_source.value();
 
         let lfo_enabled = p.lfo_enabled.value();
         let lfo_rate = p.lfo_rate.value();
@@ -124,6 +158,8 @@ impl Plugin for HardwaveWettBoi {
 
         let mix_pct = p.mix.value();
         let bypass = p.bypass.value();
+
+        let pkt_snapshot = editor::snapshot_params(p, self.bpm, self.duck_depth);
 
         self.reverb.set_params(rev_size, rev_decay, rev_damp, rev_predelay);
         self.sidechain.set_params(sc_threshold, sc_attack, sc_hold, sc_release);
@@ -152,13 +188,24 @@ impl Plugin for HardwaveWettBoi {
         let dly_wet = dly_wet_pct / 100.0;
         let lfo_depth = lfo_depth_pct / 100.0;
 
-        for (_sample_idx, mut frame) in buffer.iter_samples().enumerate() {
+        let has_sidechain = !aux.inputs.is_empty() && aux.inputs[0].channels() >= 2;
+
+        for (sample_idx, mut frame) in buffer.iter_samples().enumerate() {
             if frame.len() < 2 { continue; }
             let dry_l = *frame.get_mut(0).unwrap();
             let dry_r = *frame.get_mut(1).unwrap();
             if bypass { continue; }
 
-            let sc_input = (dry_l + dry_r) * 0.5;
+            let sc_input = match sc_source {
+                params::ScSource::Sidechain if has_sidechain => {
+                    let sc_buf = aux.inputs[0].as_slice_immutable();
+                    let sc_l = *sc_buf.get(0).and_then(|ch| ch.get(sample_idx)).unwrap_or(&0.0);
+                    let sc_r = *sc_buf.get(1).and_then(|ch| ch.get(sample_idx)).unwrap_or(&0.0);
+                    (sc_l + sc_r) * 0.5
+                }
+                _ => (dry_l + dry_r) * 0.5,
+            };
+
             let duck = self.sidechain.process(sc_input);
             self.duck_depth = duck;
 
@@ -193,6 +240,14 @@ impl Plugin for HardwaveWettBoi {
 
             *frame.get_mut(0).unwrap() = out_l.clamp(-10.0, 10.0);
             *frame.get_mut(1).unwrap() = out_r.clamp(-10.0, 10.0);
+        }
+
+        self.update_counter += 1;
+        if self.update_counter >= 4 {
+            self.update_counter = 0;
+            let mut packet = pkt_snapshot;
+            packet.sc_duck_depth = self.duck_depth;
+            let _ = self.editor_packet_tx.try_send(packet);
         }
 
         ProcessStatus::Normal
