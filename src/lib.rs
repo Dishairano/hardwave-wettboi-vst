@@ -80,7 +80,9 @@ impl Plugin for HardwaveWettBoi {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        eprintln!("[HardwaveWettBoi] editor() called — creating WettBoiEditor");
         let token = auth::load_token();
+        eprintln!("[HardwaveWettBoi] auth token: {}", if token.is_some() { "present" } else { "none" });
         Some(Box::new(editor::WettBoiEditor::new(
             Arc::clone(&self.params),
             Arc::clone(&self.editor_packet_rx),

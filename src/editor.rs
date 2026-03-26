@@ -353,8 +353,10 @@ impl Editor for WettBoiEditor {
         parent: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
+        eprintln!("[HardwaveWettBoi] Editor::spawn called, raw parent handle");
         let packet_rx = Arc::clone(&self.packet_rx);
         let (width, height) = self.scaled_size();
+        eprintln!("[HardwaveWettBoi] Editor size: {}x{}", width, height);
 
         let version = env!("CARGO_PKG_VERSION");
         let url = match &self.auth_token {
@@ -543,8 +545,18 @@ fn spawn_windows(
         .with_transparent(false)
         .with_devtools(false)
         .with_background_color((10, 10, 11, 255))
-        .build(&wrapper)
-        .ok();
+        .build(&wrapper);
+
+    let webview = match webview {
+        Ok(wv) => {
+            eprintln!("[HardwaveWettBoi] WebView created successfully");
+            Some(wv)
+        }
+        Err(e) => {
+            eprintln!("[HardwaveWettBoi] WebView creation FAILED: {}", e);
+            None
+        }
+    };
 
     Box::new(EditorHandle {
         running: running_clone,
