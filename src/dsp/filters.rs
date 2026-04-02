@@ -31,18 +31,20 @@ impl OnePoleLP {
     }
 }
 
-/// State-variable filter (HP/LP) for delay feedback filtering.
+/// Serial highpass → lowpass filter for delay feedback filtering.
 pub struct OnePoleSVF {
-    lp: f32,
-    hp: f32,
+    prev_input: f32,
+    hp_state: f32,
+    lp_state: f32,
     sr: f32,
 }
 
 impl OnePoleSVF {
     pub fn new(sr: f32) -> Self {
         Self {
-            lp: 0.0,
-            hp: 0.0,
+            prev_input: 0.0,
+            hp_state: 0.0,
+            lp_state: 0.0,
             sr,
         }
     }
@@ -53,19 +55,25 @@ impl OnePoleSVF {
 
     /// Process through a highpass at `hp_freq` then lowpass at `lp_freq`.
     pub fn process(&mut self, input: f32, hp_freq: f32, lp_freq: f32) -> f32 {
-        // Simple one-pole HP
-        let hp_coeff = 1.0 - (2.0 * PI * hp_freq / self.sr).min(PI - 0.01).sin()
-            / (1.0 + (2.0 * PI * hp_freq / self.sr).min(PI - 0.01).cos());
-        self.hp = hp_coeff * (self.hp + input - self.lp);
-        // Simple one-pole LP
-        let lp_coeff = (2.0 * PI * lp_freq / self.sr).min(PI - 0.01).sin()
-            / (1.0 + (2.0 * PI * lp_freq / self.sr).min(PI - 0.01).cos());
-        self.lp += lp_coeff * (self.hp - self.lp);
-        self.lp
+        // One-pole highpass: y[n] = alpha * (y[n-1] + x[n] - x[n-1])
+        let hp_rc = 1.0 / (2.0 * PI * hp_freq.max(1.0));
+        let hp_dt = 1.0 / self.sr;
+        let hp_alpha = hp_rc / (hp_rc + hp_dt);
+        self.hp_state = hp_alpha * (self.hp_state + input - self.prev_input);
+        self.prev_input = input;
+
+        // One-pole lowpass on HP output
+        let lp_rc = 1.0 / (2.0 * PI * lp_freq.max(1.0));
+        let lp_dt = 1.0 / self.sr;
+        let lp_alpha = lp_dt / (lp_rc + lp_dt);
+        self.lp_state += lp_alpha * (self.hp_state - self.lp_state);
+
+        self.lp_state
     }
 
     pub fn reset(&mut self) {
-        self.lp = 0.0;
-        self.hp = 0.0;
+        self.prev_input = 0.0;
+        self.hp_state = 0.0;
+        self.lp_state = 0.0;
     }
 }

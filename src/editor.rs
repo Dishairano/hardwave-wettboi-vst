@@ -283,6 +283,46 @@ window.__hardwave = {{
     )
 }
 
+/// Map string enum values from the JS UI to nih-plug plain param values (variant index).
+fn string_to_param_value(param_id: &str, s: &str) -> Option<f32> {
+    match param_id {
+        "rev_type" => match s {
+            "room" => Some(0.0),
+            "hall" => Some(1.0),
+            "plate" => Some(2.0),
+            "spring" => Some(3.0),
+            _ => None,
+        },
+        "sc_source" => match s {
+            "internal" => Some(0.0),
+            "sidechain" => Some(1.0),
+            _ => None,
+        },
+        "lfo_shape" => match s {
+            "sine" => Some(0.0),
+            "tri" => Some(1.0),
+            "saw" => Some(2.0),
+            "square" => Some(3.0),
+            "s&h" => Some(4.0),
+            _ => None,
+        },
+        "lfo_target" => match s {
+            "rev_wet" => Some(0.0),
+            "dly_wet" => Some(1.0),
+            "dly_fb" => Some(2.0),
+            "filter" => Some(3.0),
+            _ => None,
+        },
+        "routing" => match s {
+            "parallel" => Some(0.0),
+            "rev_to_dly" => Some(1.0),
+            "dly_to_rev" => Some(2.0),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Handle IPC messages from the webview.
 fn handle_ipc(
     context: &Arc<dyn GuiContext>,
@@ -304,14 +344,30 @@ fn handle_ipc(
     match msg_type {
         "set_param" => {
             let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let value = msg.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            if let Some(ptr) = param_map.get(id) {
+            let raw_value = msg.get("value");
+
+            // Resolve value: number, boolean (true→1.0, false→0.0), or string enum
+            let value: Option<f32> = raw_value.and_then(|v| {
+                if let Some(f) = v.as_f64() {
+                    Some(f as f32)
+                } else if let Some(b) = v.as_bool() {
+                    Some(if b { 1.0 } else { 0.0 })
+                } else if let Some(s) = v.as_str() {
+                    string_to_param_value(id, s)
+                } else {
+                    None
+                }
+            });
+
+            if let (Some(val), Some(ptr)) = (value, param_map.get(id)) {
                 unsafe {
-                    let normalized = ptr.preview_normalized(value as f32);
+                    let normalized = ptr.preview_normalized(val);
                     context.raw_begin_set_parameter(*ptr);
                     context.raw_set_parameter_normalized(*ptr, normalized);
                     context.raw_end_set_parameter(*ptr);
                 }
+            } else if value.is_none() {
+                eprintln!("[HardwaveWettBoi] IPC set_param '{}': could not parse value {:?}", id, raw_value);
             } else {
                 eprintln!("[HardwaveWettBoi] IPC set_param: unknown param id '{}'", id);
             }
