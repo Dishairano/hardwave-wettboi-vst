@@ -52,6 +52,17 @@ pub enum LfoTarget {
     Filter,
 }
 
+/// Signal routing mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+pub enum RoutingMode {
+    #[name = "Parallel"]
+    Parallel,
+    #[name = "Rev→Dly"]
+    ReverbToDelay,
+    #[name = "Dly→Rev"]
+    DelayToReverb,
+}
+
 /// Delay note division for tempo sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
 pub enum NoteDiv {
@@ -108,6 +119,12 @@ pub struct WettBoiParams {
     pub rev_width: FloatParam,
     #[id = "rev_wet"]
     pub rev_wet: FloatParam,
+    #[id = "rev_freeze"]
+    pub rev_freeze: BoolParam,
+    #[id = "rev_eq_hp"]
+    pub rev_eq_hp: FloatParam,
+    #[id = "rev_eq_lp"]
+    pub rev_eq_lp: FloatParam,
 
     // ── Sidechain ───────────────────────────────────────────────────────────
     #[id = "sc_threshold"]
@@ -158,12 +175,20 @@ pub struct WettBoiParams {
     pub dly_ping_pong: BoolParam,
     #[id = "dly_wet"]
     pub dly_wet: FloatParam,
+    #[id = "dly_mod_rate"]
+    pub dly_mod_rate: FloatParam,
+    #[id = "dly_mod_depth"]
+    pub dly_mod_depth: FloatParam,
+    #[id = "dly_saturation"]
+    pub dly_saturation: FloatParam,
 
     // ── Global ──────────────────────────────────────────────────────────────
     #[id = "mix"]
     pub mix: FloatParam,
     #[id = "bypass"]
     pub bypass: BoolParam,
+    #[id = "routing"]
+    pub routing: EnumParam<RoutingMode>,
 }
 
 impl Default for WettBoiParams {
@@ -216,6 +241,27 @@ impl Default for WettBoiParams {
             )
             .with_unit(" %")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
+            rev_freeze: BoolParam::new("Freeze", false),
+            rev_eq_hp: FloatParam::new(
+                "Rev EQ HP",
+                20.0,
+                FloatRange::Skewed {
+                    min: 20.0,
+                    max: 2000.0,
+                    factor: FloatRange::skew_factor(-1.5),
+                },
+            )
+            .with_unit(" Hz"),
+            rev_eq_lp: FloatParam::new(
+                "Rev EQ LP",
+                18000.0,
+                FloatRange::Skewed {
+                    min: 1000.0,
+                    max: 20000.0,
+                    factor: FloatRange::skew_factor(-1.0),
+                },
+            )
+            .with_unit(" Hz"),
 
             // Sidechain
             sc_threshold: FloatParam::new(
@@ -341,12 +387,37 @@ impl Default for WettBoiParams {
             )
             .with_unit(" %")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
+            dly_mod_rate: FloatParam::new(
+                "Mod Rate",
+                0.5,
+                FloatRange::Skewed {
+                    min: 0.01,
+                    max: 10.0,
+                    factor: FloatRange::skew_factor(-2.0),
+                },
+            )
+            .with_unit(" Hz"),
+            dly_mod_depth: FloatParam::new(
+                "Mod Depth",
+                0.0,
+                FloatRange::Linear { min: 0.0, max: 100.0 },
+            )
+            .with_unit(" %")
+            .with_value_to_string(formatters::v2s_f32_rounded(0)),
+            dly_saturation: FloatParam::new(
+                "Saturation",
+                0.0,
+                FloatRange::Linear { min: 0.0, max: 100.0 },
+            )
+            .with_unit(" %")
+            .with_value_to_string(formatters::v2s_f32_rounded(0)),
 
             // Global
             mix: FloatParam::new("Mix", 75.0, FloatRange::Linear { min: 0.0, max: 100.0 })
                 .with_unit(" %")
                 .with_value_to_string(formatters::v2s_f32_rounded(0)),
             bypass: BoolParam::new("Bypass", false),
+            routing: EnumParam::new("Routing", RoutingMode::Parallel),
         }
     }
 }

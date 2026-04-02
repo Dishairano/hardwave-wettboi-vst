@@ -16,6 +16,9 @@ pub struct WbPacket {
     pub rev_width: f32,
     pub rev_wet: f32,
     pub rev_type: String,
+    pub rev_freeze: bool,
+    pub rev_eq_hp: f32,
+    pub rev_eq_lp: f32,
 
     // ── Sidechain ───────────────────────────────────────────────────────────
     pub sc_threshold: f32,
@@ -33,6 +36,8 @@ pub struct WbPacket {
     pub lfo_phase: f32,
     pub lfo_shape: String,
     pub lfo_target: String,
+    /// Current LFO output value (-1.0 to 1.0) for visualization.
+    pub lfo_value: f32,
 
     // ── Delay ───────────────────────────────────────────────────────────────
     pub dly_enabled: bool,
@@ -46,11 +51,21 @@ pub struct WbPacket {
     pub dly_lp: f32,
     pub dly_ping_pong: bool,
     pub dly_wet: f32,
+    pub dly_mod_rate: f32,
+    pub dly_mod_depth: f32,
+    pub dly_saturation: f32,
 
     // ── Global ──────────────────────────────────────────────────────────────
     pub mix: f32,
     pub bypass: bool,
+    pub routing: String,
     pub preset: String,
+
+    // ── Metering ────────────────────────────────────────────────────────────
+    pub input_peak_l: f32,
+    pub input_peak_r: f32,
+    pub output_peak_l: f32,
+    pub output_peak_r: f32,
 }
 
 /// JS → Rust messages from the webview.

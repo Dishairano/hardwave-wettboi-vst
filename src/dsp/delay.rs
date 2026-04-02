@@ -1,4 +1,5 @@
-//! Stereo delay with tempo sync, ping-pong mode, and feedback filtering.
+//! Stereo delay with tempo sync, ping-pong mode, feedback filtering,
+//! and time modulation (chorus/flutter).
 
 use super::filters::OnePoleSVF;
 
@@ -17,6 +18,12 @@ pub struct StereoDelay {
     hp_freq: f32,
     lp_freq: f32,
     sr: f32,
+    // Modulation
+    mod_phase: f64,
+    mod_rate: f32,    // Hz
+    mod_depth: f32,   // 0–100 (maps to samples of modulation)
+    // Saturation on feedback path
+    saturation: f32,  // 0–100
 }
 
 impl StereoDelay {
@@ -34,6 +41,10 @@ impl StereoDelay {
             hp_freq: 120.0,
             lp_freq: 8000.0,
             sr,
+            mod_phase: 0.0,
+            mod_rate: 0.5,
+            mod_depth: 0.0,
+            saturation: 0.0,
         }
     }
 
@@ -75,17 +86,50 @@ impl StereoDelay {
         self.ping_pong = enabled;
     }
 
+    /// Set delay time modulation parameters.
+    /// - `rate`: modulation speed in Hz (0.01–10)
+    /// - `depth`: modulation depth 0–100 (percentage of max mod range)
+    pub fn set_modulation(&mut self, rate: f32, depth: f32) {
+        self.mod_rate = rate.clamp(0.01, 10.0);
+        self.mod_depth = depth.clamp(0.0, 100.0);
+    }
+
+    /// Set feedback saturation amount (0–100).
+    pub fn set_saturation(&mut self, amount: f32) {
+        self.saturation = amount.clamp(0.0, 100.0);
+    }
+
     /// Process stereo input. Returns (wet_l, wet_r).
     pub fn process(&mut self, in_l: f32, in_r: f32) -> (f32, f32) {
-        let buf_len = self.buf_l.len();
+        // Advance modulation LFO
+        let mod_inc = self.mod_rate as f64 / self.sr as f64;
+        self.mod_phase += mod_inc;
+        if self.mod_phase >= 1.0 {
+            self.mod_phase -= 1.0;
+        }
+
+        // Modulation offset in samples (max ±40 samples at depth=100)
+        let mod_val = (self.mod_phase as f32 * std::f32::consts::PI * 2.0).sin();
+        let mod_samples = mod_val * (self.mod_depth / 100.0) * 40.0;
+
+        // Apply modulation to delay times (L gets positive, R gets negative for stereo width)
+        let mod_delay_l = (self.delay_samples_l + mod_samples).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
+        let mod_delay_r = (self.delay_samples_r - mod_samples * 0.7).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
 
         // Read from delay lines (linear interpolation)
-        let read_l = self.read_interpolated(&self.buf_l, self.delay_samples_l);
-        let read_r = self.read_interpolated(&self.buf_r, self.delay_samples_r);
+        let read_l = self.read_interpolated(&self.buf_l, mod_delay_l);
+        let read_r = self.read_interpolated(&self.buf_r, mod_delay_r);
 
         // Filter the feedback
-        let filt_l = self.filter_l.process(read_l, self.hp_freq, self.lp_freq);
-        let filt_r = self.filter_r.process(read_r, self.hp_freq, self.lp_freq);
+        let mut filt_l = self.filter_l.process(read_l, self.hp_freq, self.lp_freq);
+        let mut filt_r = self.filter_r.process(read_r, self.hp_freq, self.lp_freq);
+
+        // Saturation on feedback path (soft tanh)
+        if self.saturation > 0.0 {
+            let drive = 1.0 + self.saturation / 100.0 * 4.0; // 1x–5x drive
+            filt_l = (filt_l * drive).tanh() / drive.tanh();
+            filt_r = (filt_r * drive).tanh() / drive.tanh();
+        }
 
         // Write to delay line
         if self.ping_pong {
@@ -97,7 +141,7 @@ impl StereoDelay {
             self.buf_r[self.write_idx] = in_r + filt_r * self.feedback;
         }
 
-        self.write_idx = (self.write_idx + 1) % buf_len;
+        self.write_idx = (self.write_idx + 1) % self.buf_l.len();
 
         (read_l, read_r)
     }
@@ -119,5 +163,6 @@ impl StereoDelay {
         self.write_idx = 0;
         self.filter_l.reset();
         self.filter_r.reset();
+        self.mod_phase = 0.0;
     }
 }

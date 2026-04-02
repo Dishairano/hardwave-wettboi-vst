@@ -76,6 +76,7 @@ impl raw_window_handle::HasDisplayHandle for RwhWrapper {
 
 /// Build a map of param ID strings to ParamPtr for the IPC handler.
 fn build_param_map(params: &WettBoiParams) -> HashMap<String, nih_plug::prelude::ParamPtr> {
+    eprintln!("[HardwaveWettBoi] Building param map...");
     let mut map = HashMap::new();
 
     // Reverb
@@ -87,6 +88,9 @@ fn build_param_map(params: &WettBoiParams) -> HashMap<String, nih_plug::prelude:
     map.insert("rev_damp".into(), params.rev_damp.as_ptr());
     map.insert("rev_width".into(), params.rev_width.as_ptr());
     map.insert("rev_wet".into(), params.rev_wet.as_ptr());
+    map.insert("rev_freeze".into(), params.rev_freeze.as_ptr());
+    map.insert("rev_eq_hp".into(), params.rev_eq_hp.as_ptr());
+    map.insert("rev_eq_lp".into(), params.rev_eq_lp.as_ptr());
 
     // Sidechain
     map.insert("sc_threshold".into(), params.sc_threshold.as_ptr());
@@ -115,17 +119,22 @@ fn build_param_map(params: &WettBoiParams) -> HashMap<String, nih_plug::prelude:
     map.insert("dly_lp".into(), params.dly_lp.as_ptr());
     map.insert("dly_ping_pong".into(), params.dly_ping_pong.as_ptr());
     map.insert("dly_wet".into(), params.dly_wet.as_ptr());
+    map.insert("dly_mod_rate".into(), params.dly_mod_rate.as_ptr());
+    map.insert("dly_mod_depth".into(), params.dly_mod_depth.as_ptr());
+    map.insert("dly_saturation".into(), params.dly_saturation.as_ptr());
 
     // Global
     map.insert("mix".into(), params.mix.as_ptr());
     map.insert("bypass".into(), params.bypass.as_ptr());
+    map.insert("routing".into(), params.routing.as_ptr());
 
+    eprintln!("[HardwaveWettBoi] Param map built: {} entries", map.len());
     map
 }
 
 /// Create a snapshot of the current DAW params as a `WbPacket`.
-pub fn snapshot_params(params: &WettBoiParams, bpm: f32, duck_depth: f32) -> WbPacket {
-    use crate::params::{ReverbType, ScSource, LfoShape, LfoTarget, NoteDiv};
+pub fn snapshot_params(params: &WettBoiParams, bpm: f32, duck_depth: f32, lfo_value: f32) -> WbPacket {
+    use crate::params::{ReverbType, ScSource, LfoShape, LfoTarget, NoteDiv, RoutingMode};
 
     let rev_type_str = match params.rev_type.value() {
         ReverbType::Room => "room",
@@ -154,6 +163,12 @@ pub fn snapshot_params(params: &WettBoiParams, bpm: f32, duck_depth: f32) -> WbP
         LfoTarget::Filter => "filter",
     };
 
+    let routing_str = match params.routing.value() {
+        RoutingMode::Parallel => "parallel",
+        RoutingMode::ReverbToDelay => "rev_to_dly",
+        RoutingMode::DelayToReverb => "dly_to_rev",
+    };
+
     let note_to_str = |n: NoteDiv| -> &'static str {
         match n {
             NoteDiv::Sixteenth => "1/16",
@@ -177,6 +192,9 @@ pub fn snapshot_params(params: &WettBoiParams, bpm: f32, duck_depth: f32) -> WbP
         rev_width: params.rev_width.value(),
         rev_wet: params.rev_wet.value(),
         rev_type: rev_type_str.to_string(),
+        rev_freeze: params.rev_freeze.value(),
+        rev_eq_hp: params.rev_eq_hp.value(),
+        rev_eq_lp: params.rev_eq_lp.value(),
         sc_threshold: params.sc_threshold.value(),
         sc_attack: params.sc_attack.value(),
         sc_hold: params.sc_hold.value(),
@@ -189,6 +207,7 @@ pub fn snapshot_params(params: &WettBoiParams, bpm: f32, duck_depth: f32) -> WbP
         lfo_phase: params.lfo_phase.value(),
         lfo_shape: lfo_shape_str.to_string(),
         lfo_target: lfo_target_str.to_string(),
+        lfo_value,
         dly_enabled: params.dly_enabled.value(),
         dly_sync: params.dly_sync.value(),
         dly_time_l: params.dly_time_l.value(),
@@ -200,15 +219,23 @@ pub fn snapshot_params(params: &WettBoiParams, bpm: f32, duck_depth: f32) -> WbP
         dly_lp: params.dly_lp.value(),
         dly_ping_pong: params.dly_ping_pong.value(),
         dly_wet: params.dly_wet.value(),
+        dly_mod_rate: params.dly_mod_rate.value(),
+        dly_mod_depth: params.dly_mod_depth.value(),
+        dly_saturation: params.dly_saturation.value(),
         mix: params.mix.value(),
         bypass: params.bypass.value(),
+        routing: routing_str.to_string(),
         preset: "Init".to_string(),
+        input_peak_l: 0.0,
+        input_peak_r: 0.0,
+        output_peak_l: 0.0,
+        output_peak_r: 0.0,
     }
 }
 
 /// Build the init JavaScript that gets injected into the webview on load.
 fn ipc_init_script(params: &WettBoiParams, bpm: f32) -> String {
-    let snapshot = snapshot_params(params, bpm, 0.0);
+    let snapshot = snapshot_params(params, bpm, 0.0, 0.0);
     let initial_json = serde_json::to_string(&snapshot).unwrap_or_else(|_| "null".into());
     let version = env!("CARGO_PKG_VERSION");
 
@@ -267,7 +294,10 @@ fn handle_ipc(
 ) {
     let msg: serde_json::Value = match serde_json::from_str(raw_body) {
         Ok(v) => v,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!("[HardwaveWettBoi] IPC parse error: {} — raw: {}", e, &raw_body[..raw_body.len().min(200)]);
+            return;
+        }
     };
 
     let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -282,6 +312,8 @@ fn handle_ipc(
                     context.raw_set_parameter_normalized(*ptr, normalized);
                     context.raw_end_set_parameter(*ptr);
                 }
+            } else {
+                eprintln!("[HardwaveWettBoi] IPC set_param: unknown param id '{}'", id);
             }
         }
         "release_focus" => {
@@ -294,6 +326,7 @@ fn handle_ipc(
         "resize" => {
             let w = msg.get("width").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let h = msg.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            eprintln!("[HardwaveWettBoi] IPC resize: {}x{}", w, h);
             if w >= MIN_WIDTH && w <= MAX_WIDTH && h >= MIN_HEIGHT && h <= MAX_HEIGHT {
                 *editor_size.lock() = (w, h);
                 if context.request_resize() {
@@ -301,17 +334,29 @@ fn handle_ipc(
                         let _ = tx.send((w, h));
                     }
                 }
+            } else {
+                eprintln!("[HardwaveWettBoi] IPC resize: out of bounds ({}x{} not in {}x{}–{}x{})", w, h, MIN_WIDTH, MIN_HEIGHT, MAX_WIDTH, MAX_HEIGHT);
             }
         }
         "save_token" => {
+            eprintln!("[HardwaveWettBoi] IPC save_token: persisting to disk");
             if let Some(token) = msg.get("token").and_then(|v| v.as_str()) {
-                let _ = auth::save_token(token);
+                match auth::save_token(token) {
+                    Ok(()) => eprintln!("[HardwaveWettBoi] Token saved successfully"),
+                    Err(e) => eprintln!("[HardwaveWettBoi] Token save FAILED: {}", e),
+                }
             }
         }
         "clear_token" => {
-            let _ = auth::clear_token();
+            eprintln!("[HardwaveWettBoi] IPC clear_token: removing from disk");
+            match auth::clear_token() {
+                Ok(()) => eprintln!("[HardwaveWettBoi] Token cleared"),
+                Err(e) => eprintln!("[HardwaveWettBoi] Token clear FAILED: {}", e),
+            }
         }
-        _ => {}
+        other => {
+            eprintln!("[HardwaveWettBoi] IPC unknown message type: '{}'", other);
+        }
     }
 }
 
@@ -353,20 +398,24 @@ impl Editor for WettBoiEditor {
         parent: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
-        eprintln!("[HardwaveWettBoi] Editor::spawn called, raw parent handle");
+        let scale = *self.scale_factor.lock();
+        eprintln!("[HardwaveWettBoi] Editor::spawn — scale_factor={:.2}, auth_token={}", scale, if self.auth_token.is_some() { "present" } else { "none" });
         let packet_rx = Arc::clone(&self.packet_rx);
         let (width, height) = self.scaled_size();
-        eprintln!("[HardwaveWettBoi] Editor size: {}x{}", width, height);
+        eprintln!("[HardwaveWettBoi] Editor size: {}x{} (scaled)", width, height);
 
         let version = env!("CARGO_PKG_VERSION");
         let url = match &self.auth_token {
             Some(t) => format!("{}?token={}&v={}", WETTBOI_URL, t, version),
             None => format!("{}?v={}", WETTBOI_URL, version),
         };
+        eprintln!("[HardwaveWettBoi] Loading URL: {} (token {})", WETTBOI_URL, if self.auth_token.is_some() { "injected" } else { "absent" });
 
         let param_map = Arc::new(build_param_map(&self.params));
         let init_js = ipc_init_script(&self.params, 150.0);
+        eprintln!("[HardwaveWettBoi] Init script: {} bytes", init_js.len());
         let raw_handle = extract_raw_handle(&parent);
+        eprintln!("[HardwaveWettBoi] Parent window handle: 0x{:x}", raw_handle);
 
         let (resize_tx_val, resize_rx) = unbounded::<(u32, u32)>();
         *self.resize_tx.lock() = Some(resize_tx_val);
@@ -376,11 +425,13 @@ impl Editor for WettBoiEditor {
 
         #[cfg(target_os = "windows")]
         {
+            eprintln!("[HardwaveWettBoi] Platform: Windows — using TCP polling bridge");
             spawn_windows(raw_handle, url, width, height, packet_rx, context, param_map, init_js, resize_rx, editor_size, resize_tx)
         }
 
         #[cfg(not(target_os = "windows"))]
         {
+            eprintln!("[HardwaveWettBoi] Platform: Unix — using evaluate_script bridge");
             spawn_unix(raw_handle, url, width, height, packet_rx, context, param_map, init_js, resize_rx, editor_size, resize_tx)
         }
     }
@@ -471,6 +522,7 @@ fn spawn_windows(
         }
     };
     let port = listener.local_addr().unwrap().port();
+    eprintln!("[HardwaveWettBoi] TCP server bound on 127.0.0.1:{}", port);
     let latest_json = Arc::new(Mutex::new(String::from("{}")));
     let latest_json_server = Arc::clone(&latest_json);
     let running_server = Arc::clone(&running);
@@ -526,11 +578,13 @@ fn spawn_windows(
     let rtx = Arc::clone(&resize_tx);
 
     let data_dir = webview2_data_dir();
+    eprintln!("[HardwaveWettBoi] WebView2 data dir: {:?}", data_dir);
     let _ = std::fs::create_dir_all(&data_dir);
     let mut web_context = wry::WebContext::new(Some(data_dir));
 
     let wrapper = RwhWrapper(raw_handle);
 
+    eprintln!("[HardwaveWettBoi] Creating WebView2 (Windows) {}x{} ...", width, height);
     use wry::WebViewBuilderExtWindows;
     let webview = wry::WebViewBuilder::with_web_context(&mut web_context)
         .with_url(&url)
@@ -589,7 +643,9 @@ fn spawn_unix(
     let editor_thread = std::thread::spawn(move || {
         #[cfg(target_os = "linux")]
         {
+            eprintln!("[HardwaveWettBoi] Initialising GTK...");
             let _ = gtk::init();
+            eprintln!("[HardwaveWettBoi] GTK initialised");
         }
 
         let wrapper = RwhWrapper(raw_handle);
@@ -599,9 +655,11 @@ fn spawn_unix(
         let rtx = Arc::clone(&resize_tx);
 
         let data_dir = webview_data_dir();
+        eprintln!("[HardwaveWettBoi] WebView data dir: {:?}", data_dir);
         let _ = std::fs::create_dir_all(&data_dir);
         let mut web_context = wry::WebContext::new(Some(data_dir));
 
+        eprintln!("[HardwaveWettBoi] Creating WebKitGTK/WebKit WebView {}x{} ...", width, height);
         let webview = match wry::WebViewBuilder::with_web_context(&mut web_context)
             .with_url(&url)
             .with_initialization_script(&init_js)
@@ -614,13 +672,17 @@ fn spawn_unix(
             })
             .build_as_child(&wrapper)
         {
-            Ok(wv) => wv,
+            Ok(wv) => {
+                eprintln!("[HardwaveWettBoi] WebView created successfully (Unix)");
+                wv
+            }
             Err(e) => {
-                eprintln!("[HardwaveWettBoi] failed to create WebView: {}", e);
+                eprintln!("[HardwaveWettBoi] WebView creation FAILED (Unix): {}", e);
                 return;
             }
         };
 
+        eprintln!("[HardwaveWettBoi] Entering editor event loop");
         while running.load(Ordering::Relaxed) {
             while let Ok((w, h)) = resize_rx.try_recv() {
                 let _ = webview.set_bounds(wry::Rect {
@@ -675,6 +737,7 @@ unsafe impl Send for EditorHandle {}
 
 impl Drop for EditorHandle {
     fn drop(&mut self) {
+        eprintln!("[HardwaveWettBoi] EditorHandle::drop — shutting down editor");
         self.running.store(false, Ordering::Relaxed);
     }
 }
