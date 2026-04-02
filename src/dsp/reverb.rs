@@ -152,6 +152,7 @@ pub struct Reverb {
     frozen: bool,
     // Pre-EQ for coloring the reverb input
     eq_lp: OnePoleLP,
+    eq_hp_prev_input: f32,
     eq_hp_state: f32,
     eq_hp_freq: f32,
 }
@@ -191,6 +192,7 @@ impl Reverb {
             reverb_type: ReverbType::Room,
             frozen: false,
             eq_lp: OnePoleLP::new(),
+            eq_hp_prev_input: 0.0,
             eq_hp_state: 0.0,
             eq_hp_freq: 20.0,
         }
@@ -311,14 +313,12 @@ impl Reverb {
         // In freeze mode, cut the input to sustain existing tail
         let effective_input = if self.frozen { 0.0 } else { input };
 
-        // Pre-EQ (simple HP + LP)
-        let hp_coeff = 1.0 - (std::f32::consts::PI * 2.0 * self.eq_hp_freq / self.sr)
-            .min(std::f32::consts::PI - 0.01)
-            .sin()
-            / (1.0 + (std::f32::consts::PI * 2.0 * self.eq_hp_freq / self.sr)
-                .min(std::f32::consts::PI - 0.01)
-                .cos());
-        self.eq_hp_state = hp_coeff * (self.eq_hp_state + effective_input - self.eq_lp.process(effective_input));
+        // Pre-EQ: one-pole HP then LP
+        let hp_rc = 1.0 / (std::f32::consts::PI * 2.0 * self.eq_hp_freq.max(1.0));
+        let hp_dt = 1.0 / self.sr;
+        let hp_alpha = hp_rc / (hp_rc + hp_dt);
+        self.eq_hp_state = hp_alpha * (self.eq_hp_state + effective_input - self.eq_hp_prev_input);
+        self.eq_hp_prev_input = effective_input;
         let eq_input = self.eq_lp.process(self.eq_hp_state);
 
         // Pre-delay
@@ -367,6 +367,7 @@ impl Reverb {
         }
         self.predelay_buf.fill(0.0);
         self.predelay_idx = 0;
+        self.eq_hp_prev_input = 0.0;
         self.eq_hp_state = 0.0;
         self.eq_lp.reset();
     }
