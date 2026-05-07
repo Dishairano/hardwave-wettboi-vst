@@ -296,7 +296,14 @@ impl Default for WettBoiParams {
                 },
             )
             .with_unit(" ms"),
-            sc_source: EnumParam::new("SC Source", ScSource::Sidechain),
+            // Default to Internal so users who add the plugin to a track
+            // without wiring a sidechain still get self-ducking behaviour.
+            // Previously the default was Sidechain, which only worked because
+            // the layout didn't declare an aux port — the code silently
+            // fell back to internal. Now that the aux port is declared
+            // (so real sidechain works), we have to make the default
+            // explicit instead of relying on the missing-port fallback.
+            sc_source: EnumParam::new("SC Source", ScSource::Internal),
 
             // LFO
             lfo_enabled: BoolParam::new("LFO On", true),

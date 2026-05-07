@@ -17,8 +17,17 @@ impl OnePoleLP {
     }
 
     pub fn set_freq(&mut self, freq: f32, sr: f32) {
-        let w = (2.0 * PI * freq / sr).min(PI - 0.01);
-        self.coeff = w.sin() / (1.0 + w.cos());
+        // Stable one-pole IIR coefficient: alpha = 1 - exp(-2π·f/sr).
+        // The previous formula sin(w)/(1+cos(w)) = tan(w/2) blew past 1.0 at
+        // typical cutoffs (e.g. 18 kHz @ 44.1 kHz → coeff ≈ 3.34), making
+        // `state += coeff*(input-state)` divergent. That fed NaN through the
+        // reverb combs and pre-EQ LP, which is why beta testers reported
+        // "no audio" after inserting WettBoi: NaN samples landed in the
+        // output buffer and the host muted the channel.
+        let f = freq.max(1.0);
+        let s = sr.max(1.0);
+        let alpha = 1.0 - (-2.0 * PI * f / s).exp();
+        self.coeff = alpha.clamp(0.0, 1.0);
     }
 
     pub fn process(&mut self, input: f32) -> f32 {

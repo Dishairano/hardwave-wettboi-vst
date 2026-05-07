@@ -42,6 +42,10 @@ struct HardwaveWettBoi {
     bpm: f32,
     duck_depth: f32,
     lfo_value: f32,
+    /// Set per-buffer when any DSP sample evaluates to non-finite. The buffer
+    /// still ships clean dry audio (graceful fallback) and we reset the
+    /// affected DSP modules at end-of-buffer so the next pass starts clean.
+    nan_detected: bool,
 
     // Metering
     input_peak_l: f32,
@@ -67,6 +71,7 @@ impl Default for HardwaveWettBoi {
             bpm: 150.0,
             duck_depth: 0.0,
             lfo_value: 0.0,
+            nan_detected: false,
             input_peak_l: 0.0,
             input_peak_r: 0.0,
             output_peak_l: 0.0,
@@ -85,7 +90,12 @@ impl Plugin for HardwaveWettBoi {
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
         main_input_channels: NonZeroU32::new(2),
         main_output_channels: NonZeroU32::new(2),
-        ..AudioIOLayout::const_default()
+        // Stereo sidechain aux input — wires the SC Source = "Sidechain"
+        // routing in the editor. Without this declaration the host has
+        // nowhere to route a sidechain signal and the feature is dead.
+        aux_input_ports: &[new_nonzero_u32(2)],
+        aux_output_ports: &[],
+        names: PortNames::const_default(),
     }];
 
     type SysExMessage = ();
@@ -120,6 +130,17 @@ impl Plugin for HardwaveWettBoi {
         self.delay.set_sample_rate(sr);
         self.sidechain.set_sample_rate(sr);
         self.lfo.set_sample_rate(sr);
+        // Defense-in-depth: clear any feedback-buffer state left over from a
+        // previous instantiation (some hosts re-use plugin instances when
+        // the user removes and re-adds them on the same track). Without
+        // this, the first buffer can leak old samples through the reverb.
+        self.reverb.reset();
+        self.delay.reset();
+        self.sidechain.reset();
+        self.lfo.reset();
+        self.duck_depth = 0.0;
+        self.lfo_value = 0.0;
+        self.nan_detected = false;
         true
     }
 
@@ -331,8 +352,17 @@ impl Plugin for HardwaveWettBoi {
             let out_l = dry_l * (1.0 - mix) + (dry_l + ducked_l) * mix;
             let out_r = dry_r * (1.0 - mix) + (dry_r + ducked_r) * mix;
 
-            let final_l = out_l.clamp(-10.0, 10.0);
-            let final_r = out_r.clamp(-10.0, 10.0);
+            // Safety net: if a DSP regression ever produces NaN/Inf, fall back
+            // to the user's dry signal instead of writing junk that the host
+            // will mute. We also flag the buffer so DSP gets reset below.
+            // f32::clamp passes NaN through unchanged, so the explicit
+            // is_finite check is required.
+            let (final_l, final_r) = if out_l.is_finite() && out_r.is_finite() {
+                (out_l.clamp(-10.0, 10.0), out_r.clamp(-10.0, 10.0))
+            } else {
+                self.nan_detected = true;
+                (dry_l, dry_r)
+            };
 
             *frame.get_mut(0).unwrap() = final_l;
             *frame.get_mut(1).unwrap() = final_r;
@@ -340,6 +370,19 @@ impl Plugin for HardwaveWettBoi {
             // Output metering
             self.output_peak_l = self.output_peak_l.max(final_l.abs());
             self.output_peak_r = self.output_peak_r.max(final_r.abs());
+        }
+
+        // If any sample in this buffer needed the NaN fallback, reset every
+        // stateful DSP module so the next buffer starts from a clean state
+        // instead of letting the bad value persist in feedback loops.
+        if self.nan_detected {
+            self.reverb.reset();
+            self.delay.reset();
+            self.sidechain.reset();
+            self.lfo.reset();
+            self.duck_depth = 0.0;
+            self.lfo_value = 0.0;
+            self.nan_detected = false;
         }
 
         // Send packet to editor at ~15 fps (every 4th buffer)
