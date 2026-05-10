@@ -7,48 +7,9 @@
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use nih_plug::editor::Editor;
 use nih_plug::prelude::{GuiContext, ParentWindowHandle, Param};
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
-
-/// Process-unique identifier for a plug-in instance. Used to give every
-/// instance its own WebView2 user-data folder so two WettBois in the same
-/// DAW project don't collide on the same lock file.
-fn unique_instance_id() -> String {
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    format!("{}-{}-{}", pid, nanos, n)
-}
-
-/// Cooperative shutdown signal — wakes worker threads immediately when Drop
-/// signals shutdown, so editor close takes <1ms instead of polling on an
-/// 8ms tick. Replaces the prior detach-and-hope-the-poll-catches-up pattern.
-struct ShutdownSignal {
-    flag: Mutex<bool>,
-    cv: Condvar,
-}
-
-impl ShutdownSignal {
-    fn new() -> Self { Self { flag: Mutex::new(false), cv: Condvar::new() } }
-    fn signal(&self) {
-        let mut g = self.flag.lock();
-        *g = true;
-        self.cv.notify_all();
-    }
-    fn is_shutdown(&self) -> bool { *self.flag.lock() }
-    fn wait(&self, timeout: Duration) -> bool {
-        let mut g = self.flag.lock();
-        if *g { return true; }
-        let _ = self.cv.wait_for(&mut g, timeout);
-        *g
-    }
-}
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::auth;
@@ -464,9 +425,6 @@ pub struct WettBoiEditor {
     scale_factor: Mutex<f32>,
     editor_size: Arc<Mutex<(u32, u32)>>,
     resize_tx: Arc<Mutex<Option<Sender<(u32, u32)>>>>,
-    /// Process-unique identifier for this plug-in instance. Used to give
-    /// every instance its own WebView2 user-data folder.
-    instance_id: String,
 }
 
 impl WettBoiEditor {
@@ -482,7 +440,6 @@ impl WettBoiEditor {
             scale_factor: Mutex::new(1.0),
             editor_size: Arc::new(Mutex::new((EDITOR_WIDTH, EDITOR_HEIGHT))),
             resize_tx: Arc::new(Mutex::new(None)),
-            instance_id: unique_instance_id(),
         }
     }
 
@@ -527,13 +484,13 @@ impl Editor for WettBoiEditor {
         #[cfg(target_os = "windows")]
         {
             eprintln!("[HardwaveWettBoi] Platform: Windows — using TCP polling bridge");
-            spawn_windows(raw_handle, url, width, height, packet_rx, context, param_map, init_js, resize_rx, editor_size, resize_tx, self.instance_id.clone())
+            spawn_windows(raw_handle, url, width, height, packet_rx, context, param_map, init_js, resize_rx, editor_size, resize_tx)
         }
 
         #[cfg(not(target_os = "windows"))]
         {
             eprintln!("[HardwaveWettBoi] Platform: Unix — using evaluate_script bridge");
-            spawn_unix(raw_handle, url, width, height, packet_rx, context, param_map, init_js, resize_rx, editor_size, resize_tx, self.instance_id.clone())
+            spawn_unix(raw_handle, url, width, height, packet_rx, context, param_map, init_js, resize_rx, editor_size, resize_tx)
         }
     }
 
@@ -575,26 +532,21 @@ fn extract_raw_handle(parent: &ParentWindowHandle) -> usize {
     }
 }
 
-fn webview_data_dir(instance_id: &str) -> std::path::PathBuf {
+fn webview_data_dir() -> std::path::PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("hardwave")
         .join("wettboi-webview")
-        .join(instance_id)
 }
 
 // ─── Windows: TCP polling approach ─────────────────────────────────────────
 
-/// Per-instance WebView2 user-data folder. Sharing UserDataFolder between
-/// concurrent plug-in instances is the documented WebView2 anti-pattern that
-/// produced the FL Studio 50/50 crash.
 #[cfg(target_os = "windows")]
-fn webview2_data_dir(instance_id: &str) -> std::path::PathBuf {
+fn webview2_data_dir() -> std::path::PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("hardwave")
         .join("wettboi-webview2")
-        .join(instance_id)
 }
 
 #[cfg(target_os = "windows")]
@@ -610,20 +562,19 @@ fn spawn_windows(
     resize_rx: Receiver<(u32, u32)>,
     editor_size: Arc<Mutex<(u32, u32)>>,
     resize_tx: Arc<Mutex<Option<Sender<(u32, u32)>>>>,
-    instance_id: String,
 ) -> Box<dyn std::any::Any + Send> {
     use std::io::{Read as IoRead, Write as IoWrite};
     use std::net::TcpListener;
 
-    let shutdown = Arc::new(ShutdownSignal::new());
-    let shutdown_for_handle = Arc::clone(&shutdown);
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = Arc::clone(&running);
 
     let listener = match TcpListener::bind("127.0.0.1:0") {
         Ok(l) => l,
         Err(e) => {
             eprintln!("[HardwaveWettBoi] failed to bind TCP: {}", e);
             return Box::new(EditorHandle {
-                shutdown: shutdown_for_handle,
+                running: running_clone,
                 _webview: None,
                 _web_context: None,
                 _server_thread: None,
@@ -631,27 +582,15 @@ fn spawn_windows(
             });
         }
     };
-    let port = match listener.local_addr() {
-        Ok(a) => a.port(),
-        Err(e) => {
-            eprintln!("[HardwaveWettBoi] failed to read local_addr: {}", e);
-            return Box::new(EditorHandle {
-                shutdown: shutdown_for_handle,
-                _webview: None,
-                _web_context: None,
-                _server_thread: None,
-                _editor_thread: None,
-            });
-        }
-    };
+    let port = listener.local_addr().unwrap().port();
     eprintln!("[HardwaveWettBoi] TCP server bound on 127.0.0.1:{}", port);
     let latest_json = Arc::new(Mutex::new(String::from("{}")));
     let latest_json_server = Arc::clone(&latest_json);
-    let shutdown_server = Arc::clone(&shutdown);
+    let running_server = Arc::clone(&running);
 
     let server_thread = std::thread::spawn(move || {
         listener.set_nonblocking(true).ok();
-        while !shutdown_server.is_shutdown() {
+        while running_server.load(Ordering::Relaxed) {
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut buf = [0u8; 1024];
                 let _ = stream.read(&mut buf);
@@ -671,9 +610,7 @@ fn spawn_windows(
                 }
             }
             while resize_rx.try_recv().is_ok() {}
-            if shutdown_server.wait(Duration::from_millis(8)) {
-                break;
-            }
+            std::thread::sleep(std::time::Duration::from_millis(8));
         }
     });
 
@@ -701,7 +638,7 @@ fn spawn_windows(
     let esize = Arc::clone(&editor_size);
     let rtx = Arc::clone(&resize_tx);
 
-    let data_dir = webview2_data_dir(&instance_id);
+    let data_dir = webview2_data_dir();
     eprintln!("[HardwaveWettBoi] WebView2 data dir: {:?}", data_dir);
     let _ = std::fs::create_dir_all(&data_dir);
     let mut web_context = wry::WebContext::new(Some(data_dir));
@@ -741,7 +678,7 @@ fn spawn_windows(
     };
 
     Box::new(EditorHandle {
-        shutdown: shutdown_for_handle,
+        running: running_clone,
         _webview: webview,
         _web_context: Some(web_context),
         _server_thread: Some(server_thread),
@@ -764,11 +701,9 @@ fn spawn_unix(
     resize_rx: Receiver<(u32, u32)>,
     editor_size: Arc<Mutex<(u32, u32)>>,
     resize_tx: Arc<Mutex<Option<Sender<(u32, u32)>>>>,
-    instance_id: String,
 ) -> Box<dyn std::any::Any + Send> {
-    let shutdown = Arc::new(ShutdownSignal::new());
-    let shutdown_for_handle = Arc::clone(&shutdown);
-    let shutdown_thread = Arc::clone(&shutdown);
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = Arc::clone(&running);
 
     let editor_thread = std::thread::spawn(move || {
         #[cfg(target_os = "linux")]
@@ -784,7 +719,7 @@ fn spawn_unix(
         let esize = Arc::clone(&editor_size);
         let rtx = Arc::clone(&resize_tx);
 
-        let data_dir = webview_data_dir(&instance_id);
+        let data_dir = webview_data_dir();
         eprintln!("[HardwaveWettBoi] WebView data dir: {:?}", data_dir);
         let _ = std::fs::create_dir_all(&data_dir);
         let mut web_context = wry::WebContext::new(Some(data_dir));
@@ -814,7 +749,7 @@ fn spawn_unix(
         };
 
         eprintln!("[HardwaveWettBoi] Entering editor event loop");
-        while !shutdown_thread.is_shutdown() {
+        while running.load(Ordering::Relaxed) {
             while let Ok((w, h)) = resize_rx.try_recv() {
                 let _ = webview.set_bounds(wry::Rect {
                     position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
@@ -841,14 +776,12 @@ fn spawn_unix(
                 }
             }
 
-            if shutdown_thread.wait(Duration::from_millis(16)) {
-                break;
-            }
+            std::thread::sleep(std::time::Duration::from_millis(16));
         }
     });
 
     Box::new(EditorHandle {
-        shutdown: shutdown_for_handle,
+        running: running_clone,
         _webview: None,
         _web_context: None,
         _server_thread: None,
@@ -859,7 +792,7 @@ fn spawn_unix(
 // ─── Editor handle ─────────────────────────────────────────────────────────
 
 struct EditorHandle {
-    shutdown: Arc<ShutdownSignal>,
+    running: Arc<AtomicBool>,
     _webview: Option<wry::WebView>,
     _web_context: Option<wry::WebContext>,
     _server_thread: Option<std::thread::JoinHandle<()>>,
@@ -871,15 +804,6 @@ unsafe impl Send for EditorHandle {}
 impl Drop for EditorHandle {
     fn drop(&mut self) {
         eprintln!("[HardwaveWettBoi] EditorHandle::drop — shutting down editor");
-        // Signal shutdown first so workers wake immediately, then join
-        // explicitly. JoinHandle::drop detaches — leaving threads to keep
-        // touching shared state past Drop and racing with WebView2 teardown.
-        self.shutdown.signal();
-        if let Some(h) = self._server_thread.take() {
-            let _ = h.join();
-        }
-        if let Some(h) = self._editor_thread.take() {
-            let _ = h.join();
-        }
+        self.running.store(false, Ordering::Relaxed);
     }
 }

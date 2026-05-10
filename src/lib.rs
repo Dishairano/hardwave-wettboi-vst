@@ -25,9 +25,13 @@ use protocol::WbPacket;
 
 // ─── Crash handler ───────────────────────────────────────────────────────────
 //
-// A panic crossing the FFI boundary into a VST host is undefined behaviour and
-// almost always crashes the host. We install a panic hook so any panic in the
-// editor / IPC path lands in a log file instead of taking the DAW down.
+// v0.3.9 fallback build: identical runtime behaviour to v0.3.7, plus this
+// panic hook. A panic crossing the FFI boundary into a VST host is undefined
+// behaviour and almost always crashes the host. Installing this hook means
+// any panic we miss in the editor / IPC paths gets logged to
+// %APPDATA%\hardwave\wettboi-crash.log instead of being lost. The previous
+// v0.3.8 had this too, but also changed Drop / WebView2 dir layout / FFI
+// error returns — for customers where v0.3.8 regressed we fall back here.
 
 fn hardwave_data_dir() -> std::path::PathBuf {
     dirs::data_dir()
@@ -141,7 +145,8 @@ struct HardwaveWettBoi {
 
 impl Default for HardwaveWettBoi {
     fn default() -> Self {
-        // Install the panic hook before anything else can fault.
+        // Install the panic hook before anything else can fault. Idempotent
+        // via std::sync::Once.
         install_crash_handler();
 
         let sr = 44100.0;
