@@ -47,6 +47,8 @@ fn crash_pending_path() -> std::path::PathBuf {
     hardwave_data_dir().join("wettboi-crash-pending")
 }
 
+mod crash_reporter;
+
 fn install_crash_handler() {
     use std::sync::Once;
     static INIT: Once = Once::new();
@@ -148,6 +150,7 @@ impl Default for HardwaveWettBoi {
         // Install the panic hook before anything else can fault. Idempotent
         // via std::sync::Once.
         install_crash_handler();
+        crash_reporter::install("wettboi");
 
         let sr = 44100.0;
         let (pkt_tx, pkt_rx) = crossbeam_channel::bounded(4);
