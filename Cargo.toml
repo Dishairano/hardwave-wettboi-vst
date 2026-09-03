@@ -38,6 +38,11 @@ dirs = "5"
 raw-window-handle = "0.6"
 
 # ── Linux GTK ────────────────────────────────────────────────────────────────
+[target.'cfg(target_os = "macos")'.dependencies]
+# The editor pump must run on the main queue: WKWebView may only be touched
+# from the main thread, and a worker thread cannot do it.
+dispatch = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 

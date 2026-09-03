@@ -487,7 +487,12 @@ impl Editor for WettBoiEditor {
             spawn_windows(raw_handle, url, width, height, packet_rx, context, param_map, init_js, resize_rx, editor_size, resize_tx)
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            spawn_macos(raw_handle, url, width, height, packet_rx, context, param_map, init_js, resize_rx, editor_size, resize_tx)
+        }
+
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         {
             eprintln!("[HardwaveWettBoi] Platform: Unix — using evaluate_script bridge");
             spawn_unix(raw_handle, url, width, height, packet_rx, context, param_map, init_js, resize_rx, editor_size, resize_tx)
@@ -786,6 +791,142 @@ fn spawn_unix(
         _web_context: None,
         _server_thread: None,
         _editor_thread: Some(editor_thread),
+    })
+}
+
+/// macOS needs its own path.
+///
+/// WKWebView may only be created — and only be called — on the main thread.
+/// The Unix path builds it inside `std::thread::spawn`, and wry rejects that
+/// outright: "WebView creation FAILED (Unix): not on the main thread". Every
+/// macOS user saw a white panel because of it.
+///
+/// The host calls `Editor::spawn` on its UI thread, which on macOS is the main
+/// thread, so the webview is built here directly. The 16 ms pump that feeds
+/// parameter packets and resizes then has to run there too, and it cannot block
+/// the main thread — so instead of a loop it reschedules itself on the main
+/// queue, which lets the host keep running between ticks.
+#[cfg(target_os = "macos")]
+fn spawn_macos(
+    raw_handle: usize,
+    url: String,
+    width: u32,
+    height: u32,
+    packet_rx: Arc<Mutex<Receiver<WbPacket>>>,
+    context: Arc<dyn GuiContext>,
+    param_map: Arc<HashMap<String, nih_plug::prelude::ParamPtr>>,
+    init_js: String,
+    resize_rx: Receiver<(u32, u32)>,
+    editor_size: Arc<Mutex<(u32, u32)>>,
+    resize_tx: Arc<Mutex<Option<Sender<(u32, u32)>>>>,
+) -> Box<dyn std::any::Any + Send> {
+    let running = Arc::new(AtomicBool::new(true));
+
+    let wrapper = RwhWrapper(raw_handle);
+    let ctx = Arc::clone(&context);
+    let pmap = Arc::clone(&param_map);
+    let esize = Arc::clone(&editor_size);
+    let rtx = Arc::clone(&resize_tx);
+
+    let data_dir = webview_data_dir();
+    eprintln!("[HardwaveWettBoi] WebView data dir: {:?}", data_dir);
+    let _ = std::fs::create_dir_all(&data_dir);
+    let mut web_context = wry::WebContext::new(Some(data_dir));
+
+    eprintln!("[HardwaveWettBoi] Creating WKWebView {}x{} on the main thread ...", width, height);
+    let webview = match wry::WebViewBuilder::with_web_context(&mut web_context)
+        .with_url(&url)
+        .with_initialization_script(&init_js)
+        .with_ipc_handler(move |msg| {
+            handle_ipc(&ctx, &pmap, &msg.body(), raw_handle, &esize, &rtx);
+        })
+        .with_bounds(wry::Rect {
+            position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
+            size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(width as f64, height as f64)),
+        })
+        .with_devtools(false)
+        .build_as_child(&wrapper)
+    {
+        Ok(w) => {
+            eprintln!("[HardwaveWettBoi] WKWebView created");
+            w
+        }
+        Err(e) => {
+            eprintln!("[HardwaveWettBoi] WebView creation FAILED (macOS): {e}");
+            return Box::new(EditorHandle {
+                running,
+                _webview: None,
+                _web_context: None,
+                _server_thread: None,
+                _editor_thread: None,
+            });
+        }
+    };
+
+    // Everything below only ever runs on the main queue, so the raw pointer is
+    // never shared across threads. It is freed by the tick that sees `running`
+    // go false, which Drop sets.
+    struct MacPump {
+        webview: wry::WebView,
+        _web_context: wry::WebContext,
+        packet_rx: Arc<Mutex<Receiver<WbPacket>>>,
+        resize_rx: Receiver<(u32, u32)>,
+        running: Arc<AtomicBool>,
+    }
+
+    let pump = Box::into_raw(Box::new(MacPump {
+        webview,
+        _web_context: web_context,
+        packet_rx,
+        resize_rx,
+        running: Arc::clone(&running),
+    })) as usize;
+
+    fn tick(ptr: usize) {
+        dispatch::Queue::main().exec_after(std::time::Duration::from_millis(16), move || {
+            // SAFETY: only ever dereferenced on the main queue, and the pointer
+            // stays valid until the tick that frees it — after which no further
+            // tick is scheduled.
+            let p = ptr as *mut MacPump;
+            let st = unsafe { &mut *p };
+
+            if !st.running.load(Ordering::Relaxed) {
+                eprintln!("[HardwaveWettBoi] Editor closed, releasing WebView");
+                unsafe { drop(Box::from_raw(p)) };
+                return;
+            }
+
+            while let Ok((w, h)) = st.resize_rx.try_recv() {
+                let _ = st.webview.set_bounds(wry::Rect {
+                    position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
+                    size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(w as f64, h as f64)),
+                });
+            }
+
+            if let Some(rx) = st.packet_rx.try_lock() {
+                while let Ok(pkt) = rx.try_recv() {
+                    if let Ok(json) = serde_json::to_string(&pkt) {
+                        let _ = st.webview.evaluate_script(&format!(
+                            "window.__onWbPacket && window.__onWbPacket({})",
+                            json
+                        ));
+                    }
+                }
+            }
+
+            tick(ptr);
+        });
+    }
+
+    eprintln!("[HardwaveWettBoi] Entering editor pump on the main queue");
+    tick(pump);
+
+    Box::new(EditorHandle {
+        running,
+        _webview: None,
+        _web_context: None,
+        _server_thread: None,
+        _editor_thread: None,
     })
 }
 
