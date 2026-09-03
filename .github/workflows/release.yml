@@ -120,7 +120,9 @@ jobs:
 
   release:
     needs: [build-linux, build-windows, build-macos-x64, build-macos-arm64]
-    runs-on: ubuntu-latest
+    # macOS, not ubuntu: this job now runs lipo and codesign to build the
+    # universal bundle, and neither exists on a Linux runner.
+    runs-on: macos-latest
     permissions:
       contents: write
 
@@ -149,17 +151,42 @@ jobs:
 
       - name: Create universal macOS zip
         run: |
-          mkdir -p universal-macos/hardwave-wettboi.vst3/Contents
-          cd artifacts/hardwave-wettboi-macos-arm64
-          unzip hardwave-wettboi-macos-arm64.zip
-          cd ../..
-          cd artifacts/hardwave-wettboi-macos-x64
-          unzip hardwave-wettboi-macos-x64.zip
-          cd ../..
-          cp -r artifacts/hardwave-wettboi-macos-arm64/hardwave-wettboi.vst3 universal-macos/
-          cp -r artifacts/hardwave-wettboi-macos-arm64/hardwave-wettboi.clap universal-macos/
+          set -euo pipefail
+          # This step used to unzip both slices and then copy the arm64 one,
+          # producing a file named "universal" that held a thin arm64 binary.
+          # Every Intel Mac silently failed to load the plug-in: hosts report
+          # it only as "failed to scan", with no hint that the architecture is
+          # wrong. lipo actually merges them.
+          cd artifacts/hardwave-wettboi-macos-arm64 && unzip -o -q hardwave-wettboi-macos-arm64.zip && cd ../..
+          cd artifacts/hardwave-wettboi-macos-x64   && unzip -o -q hardwave-wettboi-macos-x64.zip   && cd ../..
+
+          rm -rf universal-macos && mkdir -p universal-macos
+          # Start from the x64 bundle, then fold the arm64 binary into it.
+          cp -R artifacts/hardwave-wettboi-macos-x64/hardwave-wettboi.vst3 universal-macos/
+          cp -R artifacts/hardwave-wettboi-macos-x64/hardwave-wettboi.clap universal-macos/
+
+          for B in vst3 clap; do
+            lipo -create \
+              artifacts/hardwave-wettboi-macos-x64/hardwave-wettboi.$B/Contents/MacOS/hardwave-wettboi \
+              artifacts/hardwave-wettboi-macos-arm64/hardwave-wettboi.$B/Contents/MacOS/hardwave-wettboi \
+              -output universal-macos/hardwave-wettboi.$B/Contents/MacOS/hardwave-wettboi
+            # Ad-hoc sign after merging: lipo rewrites the binary and invalidates
+            # any signature, and macOS will not load unsigned code into a host.
+            codesign --force --deep --sign - universal-macos/hardwave-wettboi.$B
+          done
+
+          # Fail loudly rather than shipping a thin binary called universal again.
+          for B in vst3 clap; do
+            A=$(lipo -archs universal-macos/hardwave-wettboi.$B/Contents/MacOS/hardwave-wettboi)
+            echo "hardwave-wettboi.$B -> $A"
+            case "$A" in
+              *x86_64*arm64*|*arm64*x86_64*) ;;
+              *) echo "::error::hardwave-wettboi.$B is not universal ($A)"; exit 1 ;;
+            esac
+          done
+
           cd universal-macos
-          zip -r hardwave-wettboi-macos-universal.zip hardwave-wettboi.vst3 hardwave-wettboi.clap
+          zip -r -q hardwave-wettboi-macos-universal.zip hardwave-wettboi.vst3 hardwave-wettboi.clap
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
