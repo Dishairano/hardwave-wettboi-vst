@@ -20,10 +20,10 @@ pub struct StereoDelay {
     sr: f32,
     // Modulation
     mod_phase: f64,
-    mod_rate: f32,    // Hz
-    mod_depth: f32,   // 0–100 (maps to samples of modulation)
+    mod_rate: f32,  // Hz
+    mod_depth: f32, // 0–100 (maps to samples of modulation)
     // Saturation on feedback path
-    saturation: f32,  // 0–100
+    saturation: f32, // 0–100
 }
 
 impl StereoDelay {
@@ -58,8 +58,10 @@ impl StereoDelay {
 
     /// Set delay times in milliseconds.
     pub fn set_time_ms(&mut self, time_l_ms: f32, time_r_ms: f32) {
-        self.delay_samples_l = (time_l_ms / 1000.0 * self.sr).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
-        self.delay_samples_r = (time_r_ms / 1000.0 * self.sr).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
+        self.delay_samples_l =
+            (time_l_ms / 1000.0 * self.sr).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
+        self.delay_samples_r =
+            (time_r_ms / 1000.0 * self.sr).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
     }
 
     /// Set delay times from BPM and note division (in beats).
@@ -113,8 +115,10 @@ impl StereoDelay {
         let mod_samples = mod_val * (self.mod_depth / 100.0) * 40.0;
 
         // Apply modulation to delay times (L gets positive, R gets negative for stereo width)
-        let mod_delay_l = (self.delay_samples_l + mod_samples).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
-        let mod_delay_r = (self.delay_samples_r - mod_samples * 0.7).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
+        let mod_delay_l =
+            (self.delay_samples_l + mod_samples).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
+        let mod_delay_r =
+            (self.delay_samples_r - mod_samples * 0.7).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
 
         // Read from delay lines (linear interpolation)
         let read_l = self.read_interpolated(&self.buf_l, mod_delay_l);

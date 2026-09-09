@@ -16,10 +16,10 @@ const MAX_PREDELAY_SAMPLES: usize = 44100; // ~1s at 44.1k
 struct ReverbTuning {
     comb_lengths: [usize; NUM_COMBS],
     allpass_lengths: [usize; NUM_ALLPASS],
-    diffusion: f32,      // allpass feedback coefficient (0.3–0.7)
-    damp_scale: f32,     // multiplier for damping (higher = darker)
-    decay_scale: f32,    // multiplier for decay time
-    density: f32,        // scales comb filter count contribution
+    diffusion: f32,   // allpass feedback coefficient (0.3–0.7)
+    damp_scale: f32,  // multiplier for damping (higher = darker)
+    decay_scale: f32, // multiplier for decay time
+    density: f32,     // scales comb filter count contribution
 }
 
 const ROOM_TUNING: ReverbTuning = ReverbTuning {
@@ -36,8 +36,8 @@ const HALL_TUNING: ReverbTuning = ReverbTuning {
     comb_lengths: [1557, 1617, 1733, 1861, 1993, 2131, 2269, 2399],
     allpass_lengths: [677, 557, 433, 311],
     diffusion: 0.6,
-    damp_scale: 0.7,   // brighter tails
-    decay_scale: 1.5,   // longer natural decay
+    damp_scale: 0.7,  // brighter tails
+    decay_scale: 1.5, // longer natural decay
     density: 0.85,
 };
 
@@ -45,19 +45,19 @@ const PLATE_TUNING: ReverbTuning = ReverbTuning {
     // Dense, bright, metallic character
     comb_lengths: [1051, 1123, 1187, 1259, 1321, 1381, 1447, 1511],
     allpass_lengths: [487, 379, 283, 197],
-    diffusion: 0.7,     // high diffusion = smooth, dense
-    damp_scale: 0.5,    // very bright
+    diffusion: 0.7,  // high diffusion = smooth, dense
+    damp_scale: 0.5, // very bright
     decay_scale: 1.2,
-    density: 1.2,       // denser reflections
+    density: 1.2, // denser reflections
 };
 
 const SPRING_TUNING: ReverbTuning = ReverbTuning {
     // Uneven spacing, boomy, drip character
     comb_lengths: [983, 1097, 1289, 1429, 1531, 1667, 1811, 1949],
     allpass_lengths: [631, 491, 367, 251],
-    diffusion: 0.45,    // less diffuse = more "boing"
-    damp_scale: 1.4,    // darker
-    decay_scale: 0.8,   // shorter
+    diffusion: 0.45,  // less diffuse = more "boing"
+    damp_scale: 1.4,  // darker
+    decay_scale: 0.8, // shorter
     density: 0.9,
 };
 
@@ -162,21 +162,30 @@ impl Reverb {
         let tuning = &ROOM_TUNING;
         let ratio = sr / 44100.0;
 
-        let combs_l: Vec<_> = tuning.comb_lengths
+        let combs_l: Vec<_> = tuning
+            .comb_lengths
             .iter()
             .map(|&len| CombFilter::new((len as f32 * ratio) as usize))
             .collect();
-        let combs_r: Vec<_> = tuning.comb_lengths
+        let combs_r: Vec<_> = tuning
+            .comb_lengths
             .iter()
             .map(|&len| CombFilter::new(((len + STEREO_SPREAD) as f32 * ratio) as usize))
             .collect();
-        let allpass_l: Vec<_> = tuning.allpass_lengths
+        let allpass_l: Vec<_> = tuning
+            .allpass_lengths
             .iter()
             .map(|&len| AllpassFilter::new((len as f32 * ratio) as usize, tuning.diffusion))
             .collect();
-        let allpass_r: Vec<_> = tuning.allpass_lengths
+        let allpass_r: Vec<_> = tuning
+            .allpass_lengths
             .iter()
-            .map(|&len| AllpassFilter::new(((len + STEREO_SPREAD) as f32 * ratio) as usize, tuning.diffusion))
+            .map(|&len| {
+                AllpassFilter::new(
+                    ((len + STEREO_SPREAD) as f32 * ratio) as usize,
+                    tuning.diffusion,
+                )
+            })
             .collect();
 
         Self {
@@ -241,7 +250,8 @@ impl Reverb {
             comb.resize(new_len.max(1));
         }
         for (i, comb) in self.combs_r.iter_mut().enumerate() {
-            let new_len = (((tuning.comb_lengths[i] + STEREO_SPREAD) as f32 * ratio) * self.size_factor) as usize;
+            let new_len = (((tuning.comb_lengths[i] + STEREO_SPREAD) as f32 * ratio)
+                * self.size_factor) as usize;
             comb.resize(new_len.max(1));
         }
         for (i, ap) in self.allpass_l.iter_mut().enumerate() {
@@ -270,7 +280,8 @@ impl Reverb {
             comb.resize(new_len.max(1));
         }
         for (i, comb) in self.combs_r.iter_mut().enumerate() {
-            let new_len = (((tuning.comb_lengths[i] + STEREO_SPREAD) as f32 * ratio) * self.size_factor) as usize;
+            let new_len = (((tuning.comb_lengths[i] + STEREO_SPREAD) as f32 * ratio)
+                * self.size_factor) as usize;
             comb.resize(new_len.max(1));
         }
 
@@ -296,8 +307,8 @@ impl Reverb {
         }
 
         // Pre-delay
-        self.predelay_len = ((predelay_ms / 1000.0 * self.sr) as usize)
-            .min(self.predelay_buf.len() - 1);
+        self.predelay_len =
+            ((predelay_ms / 1000.0 * self.sr) as usize).min(self.predelay_buf.len() - 1);
     }
 
     /// Set pre-EQ frequencies for coloring the reverb input.

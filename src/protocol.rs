@@ -74,7 +74,10 @@ pub struct WbPacket {
 #[allow(dead_code)]
 pub enum UiMessage {
     #[serde(rename = "set_param")]
-    SetParam { id: String, value: serde_json::Value },
+    SetParam {
+        id: String,
+        value: serde_json::Value,
+    },
     #[serde(rename = "save_token")]
     SaveToken { token: String },
     #[serde(rename = "clear_token")]
