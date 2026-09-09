@@ -54,3 +54,7 @@ jobs:
 
       - name: Run tests
         run: cargo test --release
+      - name: Security audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
