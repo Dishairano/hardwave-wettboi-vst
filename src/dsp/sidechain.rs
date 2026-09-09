@@ -67,6 +67,7 @@ impl SidechainDetector {
     }
 
     /// Get current duck depth without advancing state.
+    #[allow(dead_code)]
     pub fn current_depth(&self) -> f32 {
         self.envelope
     }

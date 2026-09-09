@@ -71,6 +71,7 @@ pub struct WbPacket {
 /// JS → Rust messages from the webview.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
+#[allow(dead_code)]
 pub enum UiMessage {
     #[serde(rename = "set_param")]
     SetParam { id: String, value: serde_json::Value },

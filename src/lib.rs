@@ -6,6 +6,8 @@
 //!   Rev→Dly: Input → Reverb → Delay → Sidechain → Mix → Output
 //!   Dly→Rev: Input → Delay → Reverb → Sidechain → Mix → Output
 
+#![allow(clippy::type_complexity, clippy::too_many_arguments)]
+
 use crossbeam_channel::{Sender, Receiver};
 use nih_plug::prelude::*;
 use parking_lot::Mutex;
@@ -87,7 +89,7 @@ fn install_crash_handler() {
                 let _ = writeln!(f, "Arch:     {}", std::env::consts::ARCH);
                 let _ = writeln!(f, "Location: {}", location);
                 let _ = writeln!(f, "Message:  {}", payload);
-                let _ = writeln!(f, "");
+                let _ = writeln!(f);
                 let _ = writeln!(f, "Backtrace:");
                 let _ = writeln!(f, "{}", bt);
                 let _ = writeln!(f, "========================================");
@@ -378,7 +380,7 @@ impl Plugin for HardwaveWettBoi {
             let sc_input = match sc_source {
                 params::ScSource::Sidechain if has_sidechain => {
                     let sc_buf = aux.inputs[0].as_slice_immutable();
-                    let sc_l = *sc_buf.get(0).and_then(|ch| ch.get(sample_idx)).unwrap_or(&0.0);
+                    let sc_l = *sc_buf.first().and_then(|ch| ch.get(sample_idx)).unwrap_or(&0.0);
                     let sc_r = *sc_buf.get(1).and_then(|ch| ch.get(sample_idx)).unwrap_or(&0.0);
                     (sc_l + sc_r) * 0.5
                 }

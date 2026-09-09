@@ -217,6 +217,7 @@ impl Reverb {
         self.frozen = freeze;
     }
 
+    #[allow(dead_code)]
     pub fn is_frozen(&self) -> bool {
         self.frozen
     }

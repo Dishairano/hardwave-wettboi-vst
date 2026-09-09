@@ -385,7 +385,7 @@ fn handle_ipc(
             let w = msg.get("width").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let h = msg.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             eprintln!("[HardwaveWettBoi] IPC resize: {}x{}", w, h);
-            if w >= MIN_WIDTH && w <= MAX_WIDTH && h >= MIN_HEIGHT && h <= MAX_HEIGHT {
+            if (MIN_WIDTH..=MAX_WIDTH).contains(&w) && (MIN_HEIGHT..=MAX_HEIGHT).contains(&h) {
                 *editor_size.lock() = (w, h);
                 if context.request_resize() {
                     if let Some(tx) = resize_tx.lock().as_ref() {
@@ -734,7 +734,7 @@ fn spawn_unix(
             .with_url(&url)
             .with_initialization_script(&init_js)
             .with_ipc_handler(move |msg| {
-                handle_ipc(&ctx, &pmap, &msg.body(), raw_handle, &esize, &rtx);
+                handle_ipc(&ctx, &pmap, msg.body(), raw_handle, &esize, &rtx);
             })
             .with_bounds(wry::Rect {
                 position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
