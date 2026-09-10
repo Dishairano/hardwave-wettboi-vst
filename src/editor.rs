@@ -4,9 +4,9 @@
 //! - Linux/macOS: Rust pushes state via `evaluate_script()`.
 //! - Windows: Rust starts a local TCP server, JS polls via `fetch()`.
 
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use nih_plug::editor::Editor;
-use nih_plug::prelude::{GuiContext, ParentWindowHandle, Param};
+use nih_plug::prelude::{GuiContext, Param, ParentWindowHandle};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,7 +30,9 @@ unsafe impl Send for RwhWrapper {}
 unsafe impl Sync for RwhWrapper {}
 
 impl raw_window_handle::HasWindowHandle for RwhWrapper {
-    fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
         use raw_window_handle::RawWindowHandle;
 
         #[cfg(target_os = "linux")]
@@ -60,7 +62,9 @@ impl raw_window_handle::HasWindowHandle for RwhWrapper {
 }
 
 impl raw_window_handle::HasDisplayHandle for RwhWrapper {
-    fn display_handle(&self) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
         use raw_window_handle::RawDisplayHandle;
 
         #[cfg(target_os = "linux")]
@@ -135,8 +139,13 @@ fn build_param_map(params: &WettBoiParams) -> HashMap<String, nih_plug::prelude:
 }
 
 /// Create a snapshot of the current DAW params as a `WbPacket`.
-pub fn snapshot_params(params: &WettBoiParams, bpm: f32, duck_depth: f32, lfo_value: f32) -> WbPacket {
-    use crate::params::{ReverbType, ScSource, LfoShape, LfoTarget, NoteDiv, RoutingMode};
+pub fn snapshot_params(
+    params: &WettBoiParams,
+    bpm: f32,
+    duck_depth: f32,
+    lfo_value: f32,
+) -> WbPacket {
+    use crate::params::{LfoShape, LfoTarget, NoteDiv, ReverbType, RoutingMode, ScSource};
 
     let rev_type_str = match params.rev_type.value() {
         ReverbType::Room => "room",
@@ -337,7 +346,11 @@ fn handle_ipc(
     let msg: serde_json::Value = match serde_json::from_str(raw_body) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[HardwaveWettBoi] IPC parse error: {} — raw: {}", e, &raw_body[..raw_body.len().min(200)]);
+            eprintln!(
+                "[HardwaveWettBoi] IPC parse error: {} — raw: {}",
+                e,
+                &raw_body[..raw_body.len().min(200)]
+            );
             return;
         }
     };
@@ -369,7 +382,10 @@ fn handle_ipc(
                     context.raw_end_set_parameter(*ptr);
                 }
             } else if value.is_none() {
-                eprintln!("[HardwaveWettBoi] IPC set_param '{}': could not parse value {:?}", id, raw_value);
+                eprintln!(
+                    "[HardwaveWettBoi] IPC set_param '{}': could not parse value {:?}",
+                    id, raw_value
+                );
             } else {
                 eprintln!("[HardwaveWettBoi] IPC set_param: unknown param id '{}'", id);
             }
@@ -385,7 +401,7 @@ fn handle_ipc(
             let w = msg.get("width").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let h = msg.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             eprintln!("[HardwaveWettBoi] IPC resize: {}x{}", w, h);
-            if w >= MIN_WIDTH && w <= MAX_WIDTH && h >= MIN_HEIGHT && h <= MAX_HEIGHT {
+            if (MIN_WIDTH..=MAX_WIDTH).contains(&w) && (MIN_HEIGHT..=MAX_HEIGHT).contains(&h) {
                 *editor_size.lock() = (w, h);
                 if context.request_resize() {
                     if let Some(tx) = resize_tx.lock().as_ref() {
@@ -393,7 +409,10 @@ fn handle_ipc(
                     }
                 }
             } else {
-                eprintln!("[HardwaveWettBoi] IPC resize: out of bounds ({}x{} not in {}x{}–{}x{})", w, h, MIN_WIDTH, MIN_HEIGHT, MAX_WIDTH, MAX_HEIGHT);
+                eprintln!(
+                    "[HardwaveWettBoi] IPC resize: out of bounds ({}x{} not in {}x{}–{}x{})",
+                    w, h, MIN_WIDTH, MIN_HEIGHT, MAX_WIDTH, MAX_HEIGHT
+                );
             }
         }
         "save_token" => {
@@ -457,17 +476,36 @@ impl Editor for WettBoiEditor {
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
         let scale = *self.scale_factor.lock();
-        eprintln!("[HardwaveWettBoi] Editor::spawn — scale_factor={:.2}, auth_token={}", scale, if self.auth_token.is_some() { "present" } else { "none" });
+        eprintln!(
+            "[HardwaveWettBoi] Editor::spawn — scale_factor={:.2}, auth_token={}",
+            scale,
+            if self.auth_token.is_some() {
+                "present"
+            } else {
+                "none"
+            }
+        );
         let packet_rx = Arc::clone(&self.packet_rx);
         let (width, height) = self.scaled_size();
-        eprintln!("[HardwaveWettBoi] Editor size: {}x{} (scaled)", width, height);
+        eprintln!(
+            "[HardwaveWettBoi] Editor size: {}x{} (scaled)",
+            width, height
+        );
 
         let version = env!("CARGO_PKG_VERSION");
         let url = match &self.auth_token {
             Some(t) => format!("{}?token={}&v={}", WETTBOI_URL, t, version),
             None => format!("{}?v={}", WETTBOI_URL, version),
         };
-        eprintln!("[HardwaveWettBoi] Loading URL: {} (token {})", WETTBOI_URL, if self.auth_token.is_some() { "injected" } else { "absent" });
+        eprintln!(
+            "[HardwaveWettBoi] Loading URL: {} (token {})",
+            WETTBOI_URL,
+            if self.auth_token.is_some() {
+                "injected"
+            } else {
+                "absent"
+            }
+        );
 
         let param_map = Arc::new(build_param_map(&self.params));
         let init_js = ipc_init_script(&self.params, 150.0);
@@ -484,18 +522,54 @@ impl Editor for WettBoiEditor {
         #[cfg(target_os = "windows")]
         {
             eprintln!("[HardwaveWettBoi] Platform: Windows — using TCP polling bridge");
-            spawn_windows(raw_handle, url, width, height, packet_rx, context, param_map, init_js, resize_rx, editor_size, resize_tx)
+            spawn_windows(
+                raw_handle,
+                url,
+                width,
+                height,
+                packet_rx,
+                context,
+                param_map,
+                init_js,
+                resize_rx,
+                editor_size,
+                resize_tx,
+            )
         }
 
         #[cfg(target_os = "macos")]
         {
-            spawn_macos(raw_handle, url, width, height, packet_rx, context, param_map, init_js, resize_rx, editor_size, resize_tx)
+            spawn_macos(
+                raw_handle,
+                url,
+                width,
+                height,
+                packet_rx,
+                context,
+                param_map,
+                init_js,
+                resize_rx,
+                editor_size,
+                resize_tx,
+            )
         }
 
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         {
             eprintln!("[HardwaveWettBoi] Platform: Unix — using evaluate_script bridge");
-            spawn_unix(raw_handle, url, width, height, packet_rx, context, param_map, init_js, resize_rx, editor_size, resize_tx)
+            spawn_unix(
+                raw_handle,
+                url,
+                width,
+                height,
+                packet_rx,
+                context,
+                param_map,
+                init_js,
+                resize_rx,
+                editor_size,
+                resize_tx,
+            )
         }
     }
 
@@ -650,7 +724,10 @@ fn spawn_windows(
 
     let wrapper = RwhWrapper(raw_handle);
 
-    eprintln!("[HardwaveWettBoi] Creating WebView2 (Windows) {}x{} ...", width, height);
+    eprintln!(
+        "[HardwaveWettBoi] Creating WebView2 (Windows) {}x{} ...",
+        width, height
+    );
     use wry::WebViewBuilderExtWindows;
     let webview = wry::WebViewBuilder::with_web_context(&mut web_context)
         .with_url(&url)
@@ -729,16 +806,22 @@ fn spawn_unix(
         let _ = std::fs::create_dir_all(&data_dir);
         let mut web_context = wry::WebContext::new(Some(data_dir));
 
-        eprintln!("[HardwaveWettBoi] Creating WebKitGTK/WebKit WebView {}x{} ...", width, height);
+        eprintln!(
+            "[HardwaveWettBoi] Creating WebKitGTK/WebKit WebView {}x{} ...",
+            width, height
+        );
         let webview = match wry::WebViewBuilder::with_web_context(&mut web_context)
             .with_url(&url)
             .with_initialization_script(&init_js)
             .with_ipc_handler(move |msg| {
-                handle_ipc(&ctx, &pmap, &msg.body(), raw_handle, &esize, &rtx);
+                handle_ipc(&ctx, &pmap, msg.body(), raw_handle, &esize, &rtx);
             })
             .with_bounds(wry::Rect {
                 position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
-                size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(width as f64, height as f64)),
+                size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(
+                    width as f64,
+                    height as f64,
+                )),
             })
             .with_devtools(false)
             .build_as_child(&wrapper)
@@ -765,10 +848,7 @@ fn spawn_unix(
             if let Some(rx) = packet_rx.try_lock() {
                 while let Ok(pkt) = rx.try_recv() {
                     if let Ok(json) = serde_json::to_string(&pkt) {
-                        let js = format!(
-                            "window.__onWbPacket && window.__onWbPacket({})",
-                            json
-                        );
+                        let js = format!("window.__onWbPacket && window.__onWbPacket({})", json);
                         let _ = webview.evaluate_script(&js);
                     }
                 }
@@ -833,7 +913,10 @@ fn spawn_macos(
     let _ = std::fs::create_dir_all(&data_dir);
     let mut web_context = wry::WebContext::new(Some(data_dir));
 
-    eprintln!("[HardwaveWettBoi] Creating WKWebView {}x{} on the main thread ...", width, height);
+    eprintln!(
+        "[HardwaveWettBoi] Creating WKWebView {}x{} on the main thread ...",
+        width, height
+    );
     let webview = match wry::WebViewBuilder::with_web_context(&mut web_context)
         .with_url(&url)
         .with_initialization_script(&init_js)

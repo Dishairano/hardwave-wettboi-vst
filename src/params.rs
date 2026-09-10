@@ -200,13 +200,19 @@ impl Default for WettBoiParams {
             rev_predelay: FloatParam::new(
                 "Pre-Delay",
                 18.0,
-                FloatRange::Linear { min: 0.0, max: 200.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 200.0,
+                },
             )
             .with_unit(" ms"),
             rev_size: FloatParam::new(
                 "Size",
                 65.0,
-                FloatRange::Linear { min: 0.0, max: 100.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 100.0,
+                },
             )
             .with_unit(" %")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
@@ -223,21 +229,30 @@ impl Default for WettBoiParams {
             rev_damp: FloatParam::new(
                 "Damp",
                 40.0,
-                FloatRange::Linear { min: 0.0, max: 100.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 100.0,
+                },
             )
             .with_unit(" %")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
             rev_width: FloatParam::new(
                 "Width",
                 120.0,
-                FloatRange::Linear { min: 0.0, max: 200.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 200.0,
+                },
             )
             .with_unit(" %")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
             rev_wet: FloatParam::new(
                 "Rev Wet",
                 70.0,
-                FloatRange::Linear { min: 0.0, max: 100.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 100.0,
+                },
             )
             .with_unit(" %")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
@@ -267,7 +282,10 @@ impl Default for WettBoiParams {
             sc_threshold: FloatParam::new(
                 "SC Threshold",
                 -18.0,
-                FloatRange::Linear { min: -60.0, max: 0.0 },
+                FloatRange::Linear {
+                    min: -60.0,
+                    max: 0.0,
+                },
             )
             .with_unit(" dB"),
             sc_attack: FloatParam::new(
@@ -283,7 +301,10 @@ impl Default for WettBoiParams {
             sc_hold: FloatParam::new(
                 "SC Hold",
                 60.0,
-                FloatRange::Linear { min: 0.0, max: 500.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 500.0,
+                },
             )
             .with_unit(" ms"),
             sc_release: FloatParam::new(
@@ -320,14 +341,20 @@ impl Default for WettBoiParams {
             lfo_depth: FloatParam::new(
                 "LFO Depth",
                 50.0,
-                FloatRange::Linear { min: 0.0, max: 100.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 100.0,
+                },
             )
             .with_unit(" %")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
             lfo_phase: FloatParam::new(
                 "LFO Phase",
                 0.0,
-                FloatRange::Linear { min: 0.0, max: 360.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 360.0,
+                },
             )
             .with_unit("°")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
@@ -362,7 +389,10 @@ impl Default for WettBoiParams {
             dly_feedback: FloatParam::new(
                 "Feedback",
                 35.0,
-                FloatRange::Linear { min: 0.0, max: 95.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 95.0,
+                },
             )
             .with_unit(" %")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
@@ -390,7 +420,10 @@ impl Default for WettBoiParams {
             dly_wet: FloatParam::new(
                 "Dly Wet",
                 55.0,
-                FloatRange::Linear { min: 0.0, max: 100.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 100.0,
+                },
             )
             .with_unit(" %")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
@@ -407,22 +440,35 @@ impl Default for WettBoiParams {
             dly_mod_depth: FloatParam::new(
                 "Mod Depth",
                 0.0,
-                FloatRange::Linear { min: 0.0, max: 100.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 100.0,
+                },
             )
             .with_unit(" %")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
             dly_saturation: FloatParam::new(
                 "Saturation",
                 0.0,
-                FloatRange::Linear { min: 0.0, max: 100.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 100.0,
+                },
             )
             .with_unit(" %")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
 
             // Global
-            mix: FloatParam::new("Mix", 75.0, FloatRange::Linear { min: 0.0, max: 100.0 })
-                .with_unit(" %")
-                .with_value_to_string(formatters::v2s_f32_rounded(0)),
+            mix: FloatParam::new(
+                "Mix",
+                75.0,
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 100.0,
+                },
+            )
+            .with_unit(" %")
+            .with_value_to_string(formatters::v2s_f32_rounded(0)),
             bypass: BoolParam::new("Bypass", false),
             routing: EnumParam::new("Routing", RoutingMode::Parallel),
         }

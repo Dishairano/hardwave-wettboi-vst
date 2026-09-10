@@ -6,7 +6,9 @@
 //!   Rev→Dly: Input → Reverb → Delay → Sidechain → Mix → Output
 //!   Dly→Rev: Input → Delay → Reverb → Sidechain → Mix → Output
 
-use crossbeam_channel::{Sender, Receiver};
+#![allow(clippy::type_complexity, clippy::too_many_arguments)]
+
+use crossbeam_channel::{Receiver, Sender};
 use nih_plug::prelude::*;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -17,10 +19,10 @@ mod editor;
 mod params;
 mod protocol;
 
-use dsp::{Reverb, StereoDelay, SidechainDetector, Lfo};
 use dsp::lfo::Shape as LfoShape;
 use dsp::reverb::ReverbType as DspReverbType;
-use params::{WettBoiParams, LfoTarget, RoutingMode};
+use dsp::{Lfo, Reverb, SidechainDetector, StereoDelay};
+use params::{LfoTarget, RoutingMode, WettBoiParams};
 use protocol::WbPacket;
 
 // ─── Crash handler ───────────────────────────────────────────────────────────
@@ -87,7 +89,7 @@ fn install_crash_handler() {
                 let _ = writeln!(f, "Arch:     {}", std::env::consts::ARCH);
                 let _ = writeln!(f, "Location: {}", location);
                 let _ = writeln!(f, "Message:  {}", payload);
-                let _ = writeln!(f, "");
+                let _ = writeln!(f);
                 let _ = writeln!(f, "Backtrace:");
                 let _ = writeln!(f, "{}", bt);
                 let _ = writeln!(f, "========================================");
@@ -204,7 +206,10 @@ impl Plugin for HardwaveWettBoi {
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         eprintln!("[HardwaveWettBoi] editor() called — creating WettBoiEditor");
         let token = auth::load_token();
-        eprintln!("[HardwaveWettBoi] auth token: {}", if token.is_some() { "present" } else { "none" });
+        eprintln!(
+            "[HardwaveWettBoi] auth token: {}",
+            if token.is_some() { "present" } else { "none" }
+        );
         Some(Box::new(editor::WettBoiEditor::new(
             Arc::clone(&self.params),
             Arc::clone(&self.editor_packet_rx),
@@ -219,8 +224,12 @@ impl Plugin for HardwaveWettBoi {
         _context: &mut impl InitContext<Self>,
     ) -> bool {
         let sr = buffer_config.sample_rate;
-        eprintln!("[HardwaveWettBoi] initialize — sample_rate={}, buffer_size={}, version={}",
-            sr, buffer_config.max_buffer_size, env!("CARGO_PKG_VERSION"));
+        eprintln!(
+            "[HardwaveWettBoi] initialize — sample_rate={}, buffer_size={}, version={}",
+            sr,
+            buffer_config.max_buffer_size,
+            env!("CARGO_PKG_VERSION")
+        );
         self.sample_rate = sr;
         self.reverb.set_sample_rate(sr);
         self.delay.set_sample_rate(sr);
@@ -323,13 +332,16 @@ impl Plugin for HardwaveWettBoi {
         };
         self.reverb.set_type(dsp_rev_type);
         self.reverb.set_freeze(rev_freeze);
-        self.reverb.set_params(rev_size, rev_decay, rev_damp, rev_predelay);
+        self.reverb
+            .set_params(rev_size, rev_decay, rev_damp, rev_predelay);
         self.reverb.set_eq(rev_eq_hp, rev_eq_lp);
 
-        self.sidechain.set_params(sc_threshold, sc_attack, sc_hold, sc_release);
+        self.sidechain
+            .set_params(sc_threshold, sc_attack, sc_hold, sc_release);
 
         if dly_sync {
-            self.delay.set_time_sync(self.bpm, dly_note_l.beats(), dly_note_r.beats());
+            self.delay
+                .set_time_sync(self.bpm, dly_note_l.beats(), dly_note_r.beats());
         } else {
             self.delay.set_time_ms(dly_time_l, dly_time_r);
         }
@@ -364,7 +376,9 @@ impl Plugin for HardwaveWettBoi {
         self.output_peak_r *= decay;
 
         for (sample_idx, mut frame) in buffer.iter_samples().enumerate() {
-            if frame.len() < 2 { continue; }
+            if frame.len() < 2 {
+                continue;
+            }
             let dry_l = *frame.get_mut(0).unwrap();
             let dry_r = *frame.get_mut(1).unwrap();
 
@@ -372,14 +386,22 @@ impl Plugin for HardwaveWettBoi {
             self.input_peak_l = self.input_peak_l.max(dry_l.abs());
             self.input_peak_r = self.input_peak_r.max(dry_r.abs());
 
-            if bypass { continue; }
+            if bypass {
+                continue;
+            }
 
             // Sidechain detection
             let sc_input = match sc_source {
                 params::ScSource::Sidechain if has_sidechain => {
                     let sc_buf = aux.inputs[0].as_slice_immutable();
-                    let sc_l = *sc_buf.get(0).and_then(|ch| ch.get(sample_idx)).unwrap_or(&0.0);
-                    let sc_r = *sc_buf.get(1).and_then(|ch| ch.get(sample_idx)).unwrap_or(&0.0);
+                    let sc_l = *sc_buf
+                        .first()
+                        .and_then(|ch| ch.get(sample_idx))
+                        .unwrap_or(&0.0);
+                    let sc_r = *sc_buf
+                        .get(1)
+                        .and_then(|ch| ch.get(sample_idx))
+                        .unwrap_or(&0.0);
                     (sc_l + sc_r) * 0.5
                 }
                 _ => (dry_l + dry_r) * 0.5,
@@ -403,7 +425,8 @@ impl Plugin for HardwaveWettBoi {
                 _ => dly_wet,
             };
             if matches!(lfo_target, LfoTarget::DlyFeedback) {
-                self.delay.set_feedback((dly_feedback + lfo_val * 30.0).clamp(0.0, 95.0));
+                self.delay
+                    .set_feedback((dly_feedback + lfo_val * 30.0).clamp(0.0, 95.0));
             }
             if matches!(lfo_target, LfoTarget::Filter) {
                 let mod_lp = (dly_lp + lfo_val * 4000.0).clamp(1000.0, 20000.0);
@@ -416,8 +439,16 @@ impl Plugin for HardwaveWettBoi {
             let (wet_l, wet_r) = match routing {
                 RoutingMode::Parallel => {
                     // Reverb and delay process input independently
-                    let (rev_l, rev_r) = if rev_enabled { self.reverb.process(mono_in, rev_width) } else { (0.0, 0.0) };
-                    let (dly_l, dly_r) = if dly_enabled { self.delay.process(dry_l, dry_r) } else { (0.0, 0.0) };
+                    let (rev_l, rev_r) = if rev_enabled {
+                        self.reverb.process(mono_in, rev_width)
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    let (dly_l, dly_r) = if dly_enabled {
+                        self.delay.process(dry_l, dry_r)
+                    } else {
+                        (0.0, 0.0)
+                    };
                     (
                         rev_l * mod_rev_wet + dly_l * mod_dly_wet,
                         rev_r * mod_rev_wet + dly_r * mod_dly_wet,
@@ -425,17 +456,33 @@ impl Plugin for HardwaveWettBoi {
                 }
                 RoutingMode::ReverbToDelay => {
                     // Reverb output feeds into delay
-                    let (rev_l, rev_r) = if rev_enabled { self.reverb.process(mono_in, rev_width) } else { (dry_l, dry_r) };
+                    let (rev_l, rev_r) = if rev_enabled {
+                        self.reverb.process(mono_in, rev_width)
+                    } else {
+                        (dry_l, dry_r)
+                    };
                     let rev_out_l = rev_l * mod_rev_wet;
                     let rev_out_r = rev_r * mod_rev_wet;
-                    let (dly_l, dly_r) = if dly_enabled { self.delay.process(rev_out_l, rev_out_r) } else { (rev_out_l, rev_out_r) };
+                    let (dly_l, dly_r) = if dly_enabled {
+                        self.delay.process(rev_out_l, rev_out_r)
+                    } else {
+                        (rev_out_l, rev_out_r)
+                    };
                     (dly_l * mod_dly_wet, dly_r * mod_dly_wet)
                 }
                 RoutingMode::DelayToReverb => {
                     // Delay output feeds into reverb
-                    let (dly_l, dly_r) = if dly_enabled { self.delay.process(dry_l, dry_r) } else { (dry_l, dry_r) };
+                    let (dly_l, dly_r) = if dly_enabled {
+                        self.delay.process(dry_l, dry_r)
+                    } else {
+                        (dry_l, dry_r)
+                    };
                     let dly_out = (dly_l * mod_dly_wet + dly_r * mod_dly_wet) * 0.5;
-                    let (rev_l, rev_r) = if rev_enabled { self.reverb.process(dly_out, rev_width) } else { (dly_l * mod_dly_wet, dly_r * mod_dly_wet) };
+                    let (rev_l, rev_r) = if rev_enabled {
+                        self.reverb.process(dly_out, rev_width)
+                    } else {
+                        (dly_l * mod_dly_wet, dly_r * mod_dly_wet)
+                    };
                     (rev_l * mod_rev_wet, rev_r * mod_rev_wet)
                 }
             };
