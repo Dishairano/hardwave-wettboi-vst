@@ -8,6 +8,12 @@ pub struct OnePoleLP {
     state: f32,
 }
 
+impl Default for OnePoleLP {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OnePoleLP {
     pub fn new() -> Self {
         Self {
@@ -107,7 +113,11 @@ mod tests {
         lp.reset();
         // After reset, processing zero should give zero.
         let zero_out = lp.process(0.0);
-        assert!((zero_out).abs() < 1e-6, "output after reset not zero: {}", zero_out);
+        assert!(
+            (zero_out).abs() < 1e-6,
+            "output after reset not zero: {}",
+            zero_out
+        );
     }
 
     #[test]
@@ -143,8 +153,8 @@ mod tests {
         // frequency well below it. The combination should heavily attenuate a DC
         // (or low‑frequency) input.
         let hp = 5000.0; // high‑pass
-        let lp = 200.0;  // low‑pass
-        // Feed a constant DC value.
+        let lp = 200.0; // low‑pass
+                        // Feed a constant DC value.
         let mut out = 0.0;
         for _ in 0..200 {
             out = svf.process(1.0, hp, lp);
@@ -152,6 +162,10 @@ mod tests {
         // The output should be close to zero because the high‑pass removes the DC
         // component and the low‑pass then smooths the remaining high‑frequency
         // content.
-        assert!(out.abs() < 0.05, "high‑pass/low‑pass chain did not attenuate enough: {}", out);
+        assert!(
+            out.abs() < 0.05,
+            "high‑pass/low‑pass chain did not attenuate enough: {}",
+            out
+        );
     }
 }

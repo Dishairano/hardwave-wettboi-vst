@@ -14,9 +14,9 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 mod auth;
-mod dsp;
-mod editor;
-mod params;
+pub mod dsp;
+pub mod editor;
+pub mod params;
 mod protocol;
 
 use dsp::lfo::Shape as LfoShape;
@@ -145,6 +145,123 @@ struct HardwaveWettBoi {
     input_peak_r: f32,
     output_peak_l: f32,
     output_peak_r: f32,
+}
+
+/// Build the wet signal for one sample, according to the routing mode.
+///
+/// `reverb` takes a mono sample and returns a stereo pair; `delay` takes a
+/// stereo pair and returns its delayed taps only, not its input. Passing them in
+/// as closures keeps this pure, so the levels can be measured in a test rather
+/// than guessed at by ear.
+///
+/// One rule, in every mode: **the wet signal is the sum of the enabled effects,
+/// each at its own level, and nothing else.** A disabled effect adds nothing and
+/// its level control does nothing. Dry never appears here; the mix control adds
+/// it back.
+///
+/// The serial modes broke both halves of that rule. `Reverb -> Delay` returned
+/// `delay(rev * rev_wet) * dly_wet`, so the reverb itself never reached the
+/// output (only its echoes did), and what got through was attenuated twice: at
+/// 50% and 50% it arrived at 25%. `Delay -> Reverb` had the mirror image of the
+/// same fault. That is why Parallel sounded so much louder than the other two.
+/// Parallel was not too loud; the serial modes were quietly losing an effect.
+#[allow(clippy::too_many_arguments)]
+pub fn route_wet<R, D>(
+    routing: RoutingMode,
+    dry: (f32, f32),
+    rev_enabled: bool,
+    dly_enabled: bool,
+    rev_wet: f32,
+    dly_wet: f32,
+    mut reverb: R,
+    mut delay: D,
+) -> (f32, f32)
+where
+    R: FnMut(f32) -> (f32, f32),
+    D: FnMut(f32, f32) -> (f32, f32),
+{
+    let (dry_l, dry_r) = dry;
+    let mono = |l: f32, r: f32| (l + r) * 0.5;
+
+    match routing {
+        // Both effects take the input and their outputs add. Two sources at once
+        // carries more energy than one, which is what parallel means and why it
+        // sounds fuller. With the mix control fixed it is no longer also louder
+        // than the dry signal it replaces.
+        RoutingMode::Parallel => {
+            let (rev_l, rev_r) = if rev_enabled {
+                reverb(mono(dry_l, dry_r))
+            } else {
+                (0.0, 0.0)
+            };
+            let (dly_l, dly_r) = if dly_enabled {
+                delay(dry_l, dry_r)
+            } else {
+                (0.0, 0.0)
+            };
+            (
+                rev_l * rev_wet + dly_l * dly_wet,
+                rev_r * rev_wet + dly_r * dly_wet,
+            )
+        }
+
+        // Reverb into delay. Both are heard: the reverb at its own level, plus
+        // echoes of it at the delay's. With the reverb off the dry feeds the
+        // delay untouched, and only the echoes are wet.
+        RoutingMode::ReverbToDelay => {
+            let (feed_l, feed_r, rev_is_wet) = if rev_enabled {
+                let (rev_l, rev_r) = reverb(mono(dry_l, dry_r));
+                (rev_l * rev_wet, rev_r * rev_wet, true)
+            } else {
+                (dry_l, dry_r, false)
+            };
+            // What the first stage contributes to the wet. Zero when it is off:
+            // its signal is then only a feed, not an effect anybody asked for.
+            let (base_l, base_r) = if rev_is_wet {
+                (feed_l, feed_r)
+            } else {
+                (0.0, 0.0)
+            };
+            if !dly_enabled {
+                return (base_l, base_r);
+            }
+            let (tap_l, tap_r) = delay(feed_l, feed_r);
+            (base_l + tap_l * dly_wet, base_r + tap_r * dly_wet)
+        }
+
+        // Delay into reverb, the same shape in the other direction.
+        RoutingMode::DelayToReverb => {
+            let (feed_l, feed_r, dly_is_wet) = if dly_enabled {
+                let (tap_l, tap_r) = delay(dry_l, dry_r);
+                (tap_l * dly_wet, tap_r * dly_wet, true)
+            } else {
+                (dry_l, dry_r, false)
+            };
+            let (base_l, base_r) = if dly_is_wet {
+                (feed_l, feed_r)
+            } else {
+                (0.0, 0.0)
+            };
+            if !rev_enabled {
+                return (base_l, base_r);
+            }
+            let (rev_l, rev_r) = reverb(mono(feed_l, feed_r));
+            (base_l + rev_l * rev_wet, base_r + rev_r * rev_wet)
+        }
+    }
+}
+
+/// Blend the dry signal against the processed one.
+///
+/// `mix` runs 0.0 (dry only) to 1.0 (wet only). This is a crossfade, not a sum:
+/// an earlier version added the wet on top of a dry that stayed at full level,
+/// so turning Mix up always made the plugin louder, and Parallel routing (which
+/// sums reverb and delay into the wet) was louder still. Raising Mix now trades
+/// dry for wet instead of adding to it.
+#[inline]
+pub fn mix_dry_wet(dry: f32, wet: f32, mix: f32) -> f32 {
+    let m = mix.clamp(0.0, 1.0);
+    dry * (1.0 - m) + wet * m
 }
 
 impl Default for HardwaveWettBoi {
@@ -433,67 +550,35 @@ impl Plugin for HardwaveWettBoi {
                 self.delay.set_filter(dly_hp, mod_lp);
             }
 
-            let mono_in = (dry_l + dry_r) * 0.5;
-
-            // Process effects based on routing mode
-            let (wet_l, wet_r) = match routing {
-                RoutingMode::Parallel => {
-                    // Reverb and delay process input independently
-                    let (rev_l, rev_r) = if rev_enabled {
-                        self.reverb.process(mono_in, rev_width)
-                    } else {
-                        (0.0, 0.0)
-                    };
-                    let (dly_l, dly_r) = if dly_enabled {
-                        self.delay.process(dry_l, dry_r)
-                    } else {
-                        (0.0, 0.0)
-                    };
-                    (
-                        rev_l * mod_rev_wet + dly_l * mod_dly_wet,
-                        rev_r * mod_rev_wet + dly_r * mod_dly_wet,
-                    )
-                }
-                RoutingMode::ReverbToDelay => {
-                    // Reverb output feeds into delay
-                    let (rev_l, rev_r) = if rev_enabled {
-                        self.reverb.process(mono_in, rev_width)
-                    } else {
-                        (dry_l, dry_r)
-                    };
-                    let rev_out_l = rev_l * mod_rev_wet;
-                    let rev_out_r = rev_r * mod_rev_wet;
-                    let (dly_l, dly_r) = if dly_enabled {
-                        self.delay.process(rev_out_l, rev_out_r)
-                    } else {
-                        (rev_out_l, rev_out_r)
-                    };
-                    (dly_l * mod_dly_wet, dly_r * mod_dly_wet)
-                }
-                RoutingMode::DelayToReverb => {
-                    // Delay output feeds into reverb
-                    let (dly_l, dly_r) = if dly_enabled {
-                        self.delay.process(dry_l, dry_r)
-                    } else {
-                        (dry_l, dry_r)
-                    };
-                    let dly_out = (dly_l * mod_dly_wet + dly_r * mod_dly_wet) * 0.5;
-                    let (rev_l, rev_r) = if rev_enabled {
-                        self.reverb.process(dly_out, rev_width)
-                    } else {
-                        (dly_l * mod_dly_wet, dly_r * mod_dly_wet)
-                    };
-                    (rev_l * mod_rev_wet, rev_r * mod_rev_wet)
-                }
-            };
+            // The wet signal, however the two effects are wired together.
+            // `route_wet` is a free function so the levels can be measured.
+            let reverb = &mut self.reverb;
+            let delay = &mut self.delay;
+            let (wet_l, wet_r) = route_wet(
+                routing,
+                (dry_l, dry_r),
+                rev_enabled,
+                dly_enabled,
+                mod_rev_wet,
+                mod_dly_wet,
+                |mono| reverb.process(mono, rev_width),
+                |l, r| delay.process(l, r),
+            );
 
             // Apply sidechain ducking to wet signal
             let ducked_l = wet_l * (1.0 - duck);
             let ducked_r = wet_r * (1.0 - duck);
 
-            // Mix dry + wet
-            let out_l = dry_l * (1.0 - mix) + (dry_l + ducked_l) * mix;
-            let out_r = dry_r * (1.0 - mix) + (dry_r + ducked_r) * mix;
+            // Mix dry against wet.
+            //
+            // This used to read `dry * (1 - mix) + (dry + wet) * mix`, which
+            // multiplies out to `dry + wet * mix`: the dry signal stayed at full
+            // level and the wet was piled on top, so raising Mix always raised
+            // the output. Parallel routing sums reverb AND delay into that wet,
+            // which is why parallel sounded louder than the serial modes. A mix
+            // control has to trade one for the other.
+            let out_l = mix_dry_wet(dry_l, ducked_l, mix);
+            let out_r = mix_dry_wet(dry_r, ducked_r, mix);
 
             // Safety net: if a DSP regression ever produces NaN/Inf, fall back
             // to the user's dry signal instead of writing junk that the host
@@ -534,6 +619,8 @@ impl Plugin for HardwaveWettBoi {
             self.update_counter = 0;
             let mut packet = pkt_snapshot;
             packet.sc_duck_depth = self.duck_depth;
+            packet.sc_key_level = self.sidechain.key_level();
+            packet.sc_threshold_lin = self.sidechain.threshold_linear();
             packet.lfo_value = self.lfo_value;
             packet.input_peak_l = self.input_peak_l;
             packet.input_peak_r = self.input_peak_r;

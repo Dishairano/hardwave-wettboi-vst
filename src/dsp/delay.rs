@@ -114,11 +114,23 @@ impl StereoDelay {
         let mod_val = (self.mod_phase as f32 * std::f32::consts::PI * 2.0).sin();
         let mod_samples = mod_val * (self.mod_depth / 100.0) * 40.0;
 
-        // Apply modulation to delay times (L gets positive, R gets negative for stereo width)
-        let mod_delay_l =
-            (self.delay_samples_l + mod_samples).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
-        let mod_delay_r =
-            (self.delay_samples_r - mod_samples * 0.7).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
+        // Ping-pong crosses the feedback, so each repeat comes out of the other
+        // side. With two different tap times that alternation limps: at 120 BPM
+        // with L on an eighth and R on a dotted eighth (the shipped defaults)
+        // the echoes landed at 250, 625, 875, 1250 ms, gaps of 375, 250, 375.
+        // A ping-pong is one time bouncing between the speakers, so it uses the
+        // left time for both taps. Turn ping-pong off and the two times are
+        // independent again, which is a dual delay and a different instrument.
+        let base_l = self.delay_samples_l;
+        let base_r = if self.ping_pong {
+            self.delay_samples_l
+        } else {
+            self.delay_samples_r
+        };
+
+        // Modulation still pulls the sides apart (L up, R down) for width.
+        let mod_delay_l = (base_l + mod_samples).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
+        let mod_delay_r = (base_r - mod_samples * 0.7).clamp(1.0, (MAX_DELAY_SAMPLES - 1) as f32);
 
         // Read from delay lines (linear interpolation)
         let read_l = self.read_interpolated(&self.buf_l, mod_delay_l);

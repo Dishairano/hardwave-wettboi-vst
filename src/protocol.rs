@@ -28,6 +28,12 @@ pub struct WbPacket {
     pub sc_source: String,
     /// Current duck depth from DSP (0.0 = no duck, 1.0 = fully ducked).
     pub sc_duck_depth: f32,
+    /// The key signal's level right now, linear. Paired with the threshold this
+    /// is what lets the editor show why it is ducking, not just that it is.
+    pub sc_key_level: f32,
+    /// The threshold the key is compared against, linear, so the meter can draw
+    /// the line in the same units as the level.
+    pub sc_threshold_lin: f32,
 
     // ── LFO ─────────────────────────────────────────────────────────────────
     pub lfo_enabled: bool,

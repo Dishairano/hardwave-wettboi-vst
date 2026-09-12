@@ -180,17 +180,19 @@ pub fn snapshot_params(
         RoutingMode::DelayToReverb => "dly_to_rev",
     };
 
+    // One table for both directions: a name the UI sends must be the same name
+    // the plugin reports back, or the selected button stops matching what is set.
     let note_to_str = |n: NoteDiv| -> &'static str {
-        match n {
-            NoteDiv::Sixteenth => "1/16",
-            NoteDiv::Eighth => "1/8",
-            NoteDiv::DottedEighth => "d1/8",
-            NoteDiv::Quarter => "1/4",
-            NoteDiv::DottedQuarter => "d1/4",
-            NoteDiv::Half => "1/2",
-            NoteDiv::DottedHalf => "d1/2",
-            NoteDiv::Whole => "1/1",
-        }
+        NOTE_DIV_NAMES[match n {
+            NoteDiv::Sixteenth => 0,
+            NoteDiv::Eighth => 1,
+            NoteDiv::DottedEighth => 2,
+            NoteDiv::Quarter => 3,
+            NoteDiv::DottedQuarter => 4,
+            NoteDiv::Half => 5,
+            NoteDiv::DottedHalf => 6,
+            NoteDiv::Whole => 7,
+        }]
     };
 
     WbPacket {
@@ -207,6 +209,8 @@ pub fn snapshot_params(
         rev_eq_hp: params.rev_eq_hp.value(),
         rev_eq_lp: params.rev_eq_lp.value(),
         sc_threshold: params.sc_threshold.value(),
+        sc_key_level: 0.0,
+        sc_threshold_lin: 10.0_f32.powf(params.sc_threshold.value() / 20.0),
         sc_attack: params.sc_attack.value(),
         sc_hold: params.sc_hold.value(),
         sc_release: params.sc_release.value(),
@@ -295,7 +299,22 @@ window.__hardwave = {{
 }
 
 /// Map string enum values from the JS UI to nih-plug plain param values (variant index).
-fn string_to_param_value(param_id: &str, s: &str) -> Option<f32> {
+/// The index of a note division as the UI names it, matching the order of the
+/// `NoteDiv` variants in `params.rs`. Returns None for a name we do not have.
+pub fn note_div_index(name: &str) -> Option<usize> {
+    NOTE_DIV_NAMES.iter().position(|n| *n == name)
+}
+
+/// Every note division, in `NoteDiv` order. The UI shows exactly these.
+pub const NOTE_DIV_NAMES: [&str; 8] = ["1/16", "1/8", "d1/8", "1/4", "d1/4", "1/2", "d1/2", "1/1"];
+
+/// Every enum value the UI can send has to land on a variant index here, or the
+/// parameter silently never moves. That is not a hypothetical: the two delay
+/// note divisions were missing from this table in the shipped plugin, so every
+/// click on a note button and every preset that set one did nothing at all. And
+/// because tempo sync is on by default, those buttons were the only delay-time
+/// control a user could see. Public so a test can walk the whole vocabulary.
+pub fn string_to_param_value(param_id: &str, s: &str) -> Option<f32> {
     match param_id {
         "rev_type" => match s {
             "room" => Some(0.0),
@@ -330,6 +349,13 @@ fn string_to_param_value(param_id: &str, s: &str) -> Option<f32> {
             "dly_to_rev" => Some(2.0),
             _ => None,
         },
+        // The note divisions were missing here, so every click on a delay note
+        // fell through to None and the parameter never moved. Tempo sync is the
+        // default mode, which made the note buttons the only visible time
+        // control, and none of them did anything. Order must match the NoteDiv
+        // variants in params.rs; note_div_index is the single source of truth
+        // for that and is covered by a test.
+        "dly_note_l" | "dly_note_r" => note_div_index(s).map(|i| i as f32),
         _ => None,
     }
 }
