@@ -307,3 +307,54 @@ jobs:
             "$DISCORD_WEBHOOK_URL" >/dev/null
           echo "Discord changelog posted for ${VERSION}"
 
+  # ── Suite beta channel ──────────────────────────────────────────────────
+  # Every tagged build is published to Suite's beta manifest, which Pro and
+  # lifetime users see when they switch Suite to the Beta channel. That is how a
+  # release candidate reaches its testers before a developer approves it in the
+  # admin panel and it ships without the -rc suffix. The server supersedes the
+  # previous build and expires it after 21 days.
+  publish-beta:
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish to Suite beta manifest
+        env:
+          INTERNAL_SECRET: ${{ secrets.HW_INTERNAL_API_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${INTERNAL_SECRET}" ]; then
+            # A finished release should not fail over this; say plainly what is missing.
+            echo "::warning::HW_INTERNAL_API_SECRET is not set on this repo, so this build was NOT published to the Suite beta channel."
+            exit 0
+          fi
+          VERSION="${{ steps.version.outputs.version }}"
+          URL="https://github.com/${{ github.repository }}/releases/download/${VERSION}/hardwave-wettboi-windows-x64.zip"
+
+          # The release job just uploaded this asset; fetch it to hash it.
+          curl -sfL --retry 5 --retry-delay 10 --retry-all-errors -o artefact.zip "$URL"
+          SHA256=$(sha256sum artefact.zip | cut -d' ' -f1)
+          SIZE=$(stat -c%s artefact.zip)
+          rm -f artefact.zip
+
+          BODY=$(jq -n --arg v "$VERSION" --arg u "$URL" --arg s "$SHA256" --argjson z "$SIZE" \
+            '{plugin_slug:"wettboi", version:$v, artefact_url:$u, artefact_sha256:$s, artefact_size:$z, changelog:("See the release notes for " + $v + ".")}')
+          HTTP=$(curl -s -o resp.json -w "%{http_code}" -X POST \
+            -H "Content-Type: application/json" \
+            -H "x-internal-secret: ${INTERNAL_SECRET}" \
+            -d "$BODY" \
+            https://hardwavestudios.com/api/beta/publish)
+          cat resp.json
+          # 409 = already published (an idempotent re-run), which is fine.
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "409" ]; then
+            echo "beta publish failed with HTTP $HTTP" >&2
+            exit 1
+          fi
