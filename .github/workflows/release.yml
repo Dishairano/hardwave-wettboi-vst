@@ -340,17 +340,32 @@ jobs:
             exit 0
           fi
           VERSION="${{ steps.version.outputs.version }}"
-          URL="https://github.com/${{ github.repository }}/releases/download/${VERSION}/hardwave-wettboi-windows-x64.zip"
+          BASE="https://github.com/${{ github.repository }}/releases/download/${VERSION}"
 
-          # The release job just uploaded this asset; fetch it to hash it.
-          curl -sfL --retry 5 --retry-delay 10 --retry-all-errors -o artefact.zip "$URL"
-          SHA256=$(sha256sum artefact.zip | cut -d' ' -f1)
-          SIZE=$(stat -c%s artefact.zip)
-          rm -f artefact.zip
+          # One build per platform. The release job just uploaded these; fetch each to hash it.
+          ARTEFACTS='[]'
+          for PAIR in windows:hardwave-wettboi-windows-x64.zip macos:hardwave-wettboi-macos-universal.zip linux:hardwave-wettboi-linux-x64.zip; do
+            PLATFORM="${PAIR%%:*}"
+            FILE="${PAIR#*:}"
+            if ! curl -sfL --retry 5 --retry-delay 10 --retry-all-errors -o "$FILE" "$BASE/$FILE"; then
+              echo "::warning::$FILE is not on the release, so $PLATFORM testers get no beta build."
+              continue
+            fi
+            ARTEFACTS=$(jq -c --arg p "$PLATFORM" --arg u "$BASE/$FILE" \
+              --arg s "$(sha256sum "$FILE" | cut -d' ' -f1)" --argjson z "$(stat -c%s "$FILE")" \
+              '. + [{platform:$p, url:$u, sha256:$s, size:$z}]' <<<"$ARTEFACTS")
+            rm -f "$FILE"
+          done
+          if [ "$(jq length <<<"$ARTEFACTS")" -eq 0 ]; then
+            echo "No release artefacts found to publish" >&2
+            exit 1
+          fi
+          # The single artefact fields are for Suite 0.22.17 and older: the Windows build.
+          PRIMARY=$(jq -c '(map(select(.platform == "windows")) + .)[0]' <<<"$ARTEFACTS")
 
           # The tag has a leading "v"; the catalogue and the Suite registry do not.
-          BODY=$(jq -n --arg v "$VERSION" --arg u "$URL" --arg s "$SHA256" --argjson z "$SIZE" \
-            '{plugin_slug:"wettboi", version:($v | ltrimstr("v")), artefact_url:$u, artefact_sha256:$s, artefact_size:$z, changelog:("See the release notes for " + $v + ".")}')
+          BODY=$(jq -n --arg v "$VERSION" --argjson a "$ARTEFACTS" --argjson w "$PRIMARY" \
+            '{plugin_slug:"wettboi", version:($v | ltrimstr("v")), artefacts:$a, artefact_url:$w.url, artefact_sha256:$w.sha256, artefact_size:$w.size, changelog:("See the release notes for " + $v + ".")}')
           HTTP=$(curl -s -o resp.json -w "%{http_code}" -X POST \
             -H "Content-Type: application/json" \
             -H "x-internal-secret: ${INTERNAL_SECRET}" \
