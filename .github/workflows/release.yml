@@ -315,6 +315,9 @@ jobs:
   # previous build and expires it after 21 days.
   publish-beta:
     needs: [release]
+    # Release candidates only. A stable tag reaches everyone through the catalogue;
+    # in the beta channel it would only show up as a "beta" of the stable build.
+    if: contains(github.ref_name, '-') || contains(github.event.inputs.version, '-')
     runs-on: ubuntu-latest
     steps:
       - name: Get version
@@ -345,8 +348,9 @@ jobs:
           SIZE=$(stat -c%s artefact.zip)
           rm -f artefact.zip
 
+          # The tag has a leading "v"; the catalogue and the Suite registry do not.
           BODY=$(jq -n --arg v "$VERSION" --arg u "$URL" --arg s "$SHA256" --argjson z "$SIZE" \
-            '{plugin_slug:"wettboi", version:$v, artefact_url:$u, artefact_sha256:$s, artefact_size:$z, changelog:("See the release notes for " + $v + ".")}')
+            '{plugin_slug:"wettboi", version:($v | ltrimstr("v")), artefact_url:$u, artefact_sha256:$s, artefact_size:$z, changelog:("See the release notes for " + $v + ".")}')
           HTTP=$(curl -s -o resp.json -w "%{http_code}" -X POST \
             -H "Content-Type: application/json" \
             -H "x-internal-secret: ${INTERNAL_SECRET}" \
