@@ -2,6 +2,8 @@
 
 ## 0.4.0
 
+Released 2026-09-14.
+
 Four things the founder reported, and the causes behind them.
 
 - **The delay's time controls did nothing in the default mode.** Tempo sync is on
