@@ -1,4 +1,14 @@
 //! DAW-exposed parameters for Hardwave WettBoi.
+//!
+//! Every continuous parameter rounds its displayed value. Without a rounding
+//! formatter nih-plug prints the raw `f32`, all nine digits of it, and the host
+//! reading that text back gets a value one unit in the last place away from the
+//! one it asked for. Converting that value to text again then prints a
+//! different string: "26.173317 Hz" comes back as "26.173319 Hz". That is what
+//! the CLAP validator's param-conversions test fails on. Rounding the display
+//! makes the conversion a fixed point: the text the host reads back converts to
+//! the same text again. The stored value keeps its full precision, so this
+//! changes what is shown, never what is heard.
 
 use nih_plug::prelude::*;
 
@@ -205,7 +215,8 @@ impl Default for WettBoiParams {
                     max: 200.0,
                 },
             )
-            .with_unit(" ms"),
+            .with_unit(" ms")
+            .with_value_to_string(formatters::v2s_f32_rounded(2)),
             rev_size: FloatParam::new(
                 "Size",
                 65.0,
@@ -225,7 +236,8 @@ impl Default for WettBoiParams {
                     factor: FloatRange::skew_factor(-2.0),
                 },
             )
-            .with_unit(" s"),
+            .with_unit(" s")
+            .with_value_to_string(formatters::v2s_f32_rounded(2)),
             rev_damp: FloatParam::new(
                 "Damp",
                 40.0,
@@ -266,7 +278,8 @@ impl Default for WettBoiParams {
                     factor: FloatRange::skew_factor(-1.5),
                 },
             )
-            .with_unit(" Hz"),
+            .with_unit(" Hz")
+            .with_value_to_string(formatters::v2s_f32_rounded(1)),
             rev_eq_lp: FloatParam::new(
                 "Rev EQ LP",
                 18000.0,
@@ -276,7 +289,8 @@ impl Default for WettBoiParams {
                     factor: FloatRange::skew_factor(-1.0),
                 },
             )
-            .with_unit(" Hz"),
+            .with_unit(" Hz")
+            .with_value_to_string(formatters::v2s_f32_rounded(1)),
 
             // Sidechain
             sc_threshold: FloatParam::new(
@@ -287,7 +301,8 @@ impl Default for WettBoiParams {
                     max: 0.0,
                 },
             )
-            .with_unit(" dB"),
+            .with_unit(" dB")
+            .with_value_to_string(formatters::v2s_f32_rounded(1)),
             sc_attack: FloatParam::new(
                 "SC Attack",
                 2.5,
@@ -297,7 +312,8 @@ impl Default for WettBoiParams {
                     factor: FloatRange::skew_factor(-2.0),
                 },
             )
-            .with_unit(" ms"),
+            .with_unit(" ms")
+            .with_value_to_string(formatters::v2s_f32_rounded(2)),
             sc_hold: FloatParam::new(
                 "SC Hold",
                 60.0,
@@ -306,7 +322,8 @@ impl Default for WettBoiParams {
                     max: 500.0,
                 },
             )
-            .with_unit(" ms"),
+            .with_unit(" ms")
+            .with_value_to_string(formatters::v2s_f32_rounded(1)),
             sc_release: FloatParam::new(
                 "SC Release",
                 280.0,
@@ -316,7 +333,8 @@ impl Default for WettBoiParams {
                     factor: FloatRange::skew_factor(-1.5),
                 },
             )
-            .with_unit(" ms"),
+            .with_unit(" ms")
+            .with_value_to_string(formatters::v2s_f32_rounded(1)),
             // Default to Internal so users who add the plugin to a track
             // without wiring a sidechain still get self-ducking behaviour.
             // Previously the default was Sidechain, which only worked because
@@ -337,7 +355,8 @@ impl Default for WettBoiParams {
                     factor: FloatRange::skew_factor(-2.0),
                 },
             )
-            .with_unit(" Hz"),
+            .with_unit(" Hz")
+            .with_value_to_string(formatters::v2s_f32_rounded(2)),
             lfo_depth: FloatParam::new(
                 "LFO Depth",
                 50.0,
@@ -373,7 +392,8 @@ impl Default for WettBoiParams {
                     factor: FloatRange::skew_factor(-1.5),
                 },
             )
-            .with_unit(" ms"),
+            .with_unit(" ms")
+            .with_value_to_string(formatters::v2s_f32_rounded(2)),
             dly_time_r: FloatParam::new(
                 "Delay R",
                 600.0,
@@ -383,7 +403,8 @@ impl Default for WettBoiParams {
                     factor: FloatRange::skew_factor(-1.5),
                 },
             )
-            .with_unit(" ms"),
+            .with_unit(" ms")
+            .with_value_to_string(formatters::v2s_f32_rounded(2)),
             dly_note_l: EnumParam::new("Note L", NoteDiv::Eighth),
             dly_note_r: EnumParam::new("Note R", NoteDiv::DottedEighth),
             dly_feedback: FloatParam::new(
@@ -405,7 +426,8 @@ impl Default for WettBoiParams {
                     factor: FloatRange::skew_factor(-1.5),
                 },
             )
-            .with_unit(" Hz"),
+            .with_unit(" Hz")
+            .with_value_to_string(formatters::v2s_f32_rounded(1)),
             dly_lp: FloatParam::new(
                 "Delay LP",
                 8000.0,
@@ -415,7 +437,8 @@ impl Default for WettBoiParams {
                     factor: FloatRange::skew_factor(-1.0),
                 },
             )
-            .with_unit(" Hz"),
+            .with_unit(" Hz")
+            .with_value_to_string(formatters::v2s_f32_rounded(1)),
             dly_ping_pong: BoolParam::new("Ping Pong", true),
             dly_wet: FloatParam::new(
                 "Dly Wet",
@@ -436,7 +459,8 @@ impl Default for WettBoiParams {
                     factor: FloatRange::skew_factor(-2.0),
                 },
             )
-            .with_unit(" Hz"),
+            .with_unit(" Hz")
+            .with_value_to_string(formatters::v2s_f32_rounded(2)),
             dly_mod_depth: FloatParam::new(
                 "Mod Depth",
                 0.0,

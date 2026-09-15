@@ -22,6 +22,7 @@ mod protocol;
 use dsp::lfo::Shape as LfoShape;
 use dsp::reverb::ReverbType as DspReverbType;
 use dsp::{Lfo, Reverb, SidechainDetector, StereoDelay};
+use nih_plug::wrapper::state::ParamValue;
 use params::{LfoTarget, RoutingMode, WettBoiParams};
 use protocol::WbPacket;
 
@@ -264,6 +265,87 @@ pub fn mix_dry_wet(dry: f32, wet: f32, mix: f32) -> f32 {
     dry * (1.0 - m) + wet * m
 }
 
+/// Check a saved state before any of it reaches a parameter.
+///
+/// State comes from a project file or a preset file. It is input like any
+/// other: it can be truncated, hand-edited, written by an older build, or
+/// simply corrupt. nih-plug hands whatever it parsed straight to
+/// `set_plain_value`, which stores the number as-is — it does not clamp, and it
+/// does not check for NaN. A delay time of 1e30 ms or a NaN mix then reaches
+/// the DSP on the next buffer and takes the audio, and in some hosts the whole
+/// process, with it.
+///
+/// So every entry is checked here first, against the parameter it claims to be:
+///
+/// * an unknown ID is dropped, because nothing can be done with it,
+/// * a value of the wrong kind (a string for a float, say) is dropped,
+/// * a non-finite float is dropped,
+/// * a float outside the parameter's range is clamped into it,
+/// * an enum variant index outside the enum is clamped to a real variant.
+///
+/// A dropped entry leaves that one parameter at its default, which is what
+/// nih-plug already does for a parameter that is missing from the state
+/// entirely. Everything a previous version saved is in range by construction
+/// and passes through untouched, so old projects and presets load exactly as
+/// they did.
+pub fn sanitize_state(state: &mut PluginState) {
+    let params = WettBoiParams::default();
+    let known: std::collections::HashMap<String, ParamPtr> = params
+        .param_map()
+        .into_iter()
+        .map(|(id, ptr, _group)| (id, ptr))
+        .collect();
+
+    state.params.retain(|id, value| {
+        let ptr = match known.get(id) {
+            Some(ptr) => *ptr,
+            // A parameter this build does not have. nih-plug would log it and
+            // skip it; drop it here so the log stays quiet and the intent is
+            // explicit.
+            None => return false,
+        };
+
+        // The two ends of the parameter's own range. A value between them is
+        // left exactly as it was saved, bit for bit: re-deriving it through the
+        // normalized form would move it by an ulp or two and change both the
+        // sound and the bytes of the next save.
+        // SAFETY: `ptr` points into `params`, a live local that outlives this
+        // call, so dereferencing it here is sound. The same holds for the other
+        // `ptr` calls below.
+        let (lo, hi) = unsafe { (ptr.preview_plain(0.0), ptr.preview_plain(1.0)) };
+        let (lo, hi) = (lo.min(hi), lo.max(hi));
+
+        match (ptr, value) {
+            (ParamPtr::FloatParam(_), ParamValue::F32(v)) => {
+                if !v.is_finite() {
+                    return false;
+                }
+                if *v < lo || *v > hi {
+                    *v = v.clamp(lo, hi);
+                }
+                true
+            }
+            (ParamPtr::IntParam(_), ParamValue::I32(v))
+            | (ParamPtr::EnumParam(_), ParamValue::I32(v)) => {
+                let (lo, hi) = (lo.round() as i32, hi.round() as i32);
+                if *v < lo || *v > hi {
+                    *v = (*v).clamp(lo, hi);
+                }
+                true
+            }
+            (ParamPtr::BoolParam(_), ParamValue::Bool(_)) => true,
+            // Enums may also be stored under a stable string ID. We do not set
+            // those IDs, so nih-plug writes indices, but a hand-edited or
+            // future state could still carry one; nih-plug checks it against
+            // the enum itself and ignores an unknown one, so let it through.
+            (ParamPtr::EnumParam(_), ParamValue::String(_)) => true,
+            // Any other pairing is a value that does not belong to this
+            // parameter at all.
+            _ => false,
+        }
+    });
+}
+
 impl Default for HardwaveWettBoi {
     fn default() -> Self {
         // Install the panic hook before anything else can fault. Idempotent
@@ -318,6 +400,12 @@ impl Plugin for HardwaveWettBoi {
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
+    }
+
+    /// Called by nih-plug on every state load, from the host and from a preset
+    /// alike, before a single value is applied. See [`sanitize_state`].
+    fn filter_state(state: &mut PluginState) {
+        sanitize_state(state);
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
