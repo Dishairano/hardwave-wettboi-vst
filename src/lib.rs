@@ -14,10 +14,17 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 mod auth;
+mod clap_export;
 pub mod dsp;
 pub mod editor;
 pub mod params;
 mod protocol;
+
+// The CLAP entry point. `clap_export` stands in for `nih_export_clap!` so the
+// `clap.state` extension can check a saved state's length before the framework
+// allocates for it, and so a finished load tells the host to rescan the
+// parameter values. See that module for why both have to happen out there.
+pub use clap_export::clap_entry;
 
 use dsp::lfo::Shape as LfoShape;
 use dsp::reverb::ReverbType as DspReverbType;
@@ -745,5 +752,5 @@ impl Vst3Plugin for HardwaveWettBoi {
     ];
 }
 
-nih_export_clap!(HardwaveWettBoi);
+// The CLAP side is exported by `clap_export` instead of `nih_export_clap!`.
 nih_export_vst3!(HardwaveWettBoi);
