@@ -17,7 +17,10 @@ use clap_sys::events::{
     clap_event_header, clap_event_param_value, clap_input_events, clap_output_events,
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_IS_LIVE, CLAP_EVENT_PARAM_VALUE,
 };
-use clap_sys::ext::params::{clap_param_info, clap_plugin_params, CLAP_EXT_PARAMS};
+use clap_sys::ext::params::{
+    clap_host_params, clap_param_info, clap_param_rescan_flags, clap_plugin_params,
+    CLAP_EXT_PARAMS, CLAP_PARAM_RESCAN_VALUES,
+};
 use clap_sys::ext::state::{clap_plugin_state, CLAP_EXT_STATE};
 use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
 use clap_sys::host::clap_host;
@@ -29,6 +32,7 @@ use nih_plug::prelude::{Params, PluginState};
 use nih_plug::wrapper::state::ParamValue;
 use std::collections::BTreeMap;
 use std::ffi::{c_char, c_void, CStr, CString};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 // ─── A minimal host ─────────────────────────────────────────────────────────
 
@@ -38,6 +42,12 @@ unsafe extern "C" fn get_extension(_host: *const clap_host, _id: *const c_char) 
 unsafe extern "C" fn nop(_host: *const clap_host) {}
 
 fn host() -> clap_host {
+    host_with(get_extension)
+}
+
+fn host_with(
+    get_extension: unsafe extern "C" fn(*const clap_host, *const c_char) -> *const c_void,
+) -> clap_host {
     clap_host {
         clap_version: CLAP_VERSION,
         host_data: std::ptr::null_mut(),
@@ -49,6 +59,32 @@ fn host() -> clap_host {
         request_restart: Some(nop),
         request_process: Some(nop),
         request_callback: Some(nop),
+    }
+}
+
+// ─── A host that records parameter rescans ──────────────────────────────────
+
+/// Every flag `clap_host_params::rescan` has been called with, or'd together.
+static RESCANNED: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "C" fn record_rescan(_host: *const clap_host, flags: clap_param_rescan_flags) {
+    RESCANNED.fetch_or(flags, Ordering::SeqCst);
+}
+
+static RECORDING_HOST_PARAMS: clap_host_params = clap_host_params {
+    rescan: Some(record_rescan),
+    clear: None,
+    request_flush: None,
+};
+
+unsafe extern "C" fn get_extension_with_params(
+    _host: *const clap_host,
+    id: *const c_char,
+) -> *const c_void {
+    if !id.is_null() && CStr::from_ptr(id) == CLAP_EXT_PARAMS {
+        &RECORDING_HOST_PARAMS as *const clap_host_params as *const c_void
+    } else {
+        std::ptr::null()
     }
 }
 
@@ -320,6 +356,108 @@ fn a_corrupt_state_is_refused() {
             assert!((*params).get_value.unwrap()(plugin, info.id, &mut v));
             assert!(v.is_finite());
         }
+    }
+}
+
+/// State that is not ours at all, the way the validator's `state-invalid-random`
+/// test feeds it: bytes with no structure, whose first eight happen to claim the
+/// state is exabytes long.
+///
+/// The framework reads those eight bytes as a length and hands them to
+/// `Vec::with_capacity`. That allocation cannot succeed, so Rust aborts the
+/// process: `memory allocation of 1074606175335821323 bytes failed`, and the
+/// host goes down with the plugin. Nothing inside the plugin can catch it,
+/// which is why the length is checked in `src/clap_export.rs` before the
+/// framework ever sees the stream.
+///
+/// If this ever regresses the whole test binary dies with SIGABRT rather than
+/// reporting a failed assertion. That is the bug.
+#[test]
+fn random_state_is_refused_without_crashing() {
+    unsafe {
+        let host = host();
+        let plugin = create(&host);
+        let state: *const clap_plugin_state = ext(plugin, CLAP_EXT_STATE);
+        let params: *const clap_plugin_params = ext(plugin, CLAP_EXT_PARAMS);
+        let infos = param_infos(plugin, params);
+
+        // A length prefix that asks for more memory than exists, then an
+        // absurd one, then a plausible one whose body stops early, then a
+        // stream with nothing in it at all.
+        let cases: Vec<Vec<u8>> = vec![
+            vec![0xAB; 96],
+            u64::MAX.to_le_bytes().to_vec(),
+            {
+                let mut data = 4096u64.to_le_bytes().to_vec();
+                data.extend_from_slice(b"{\"params\":{}}");
+                data
+            },
+            Vec::new(),
+            0u64.to_le_bytes().to_vec(),
+        ];
+
+        for (i, data) in cases.into_iter().enumerate() {
+            let mut ctx = ReadCtx { data, pos: 0 };
+            let istream = clap_istream {
+                ctx: &mut ctx as *mut _ as *mut c_void,
+                read: Some(read_stream),
+            };
+            assert!(
+                !(*state).load.unwrap()(plugin, &istream),
+                "case {i}: invalid state was accepted"
+            );
+        }
+
+        // And the plugin is still usable afterwards.
+        for info in &infos {
+            let mut v = 0.0f64;
+            assert!((*params).get_value.unwrap()(plugin, info.id, &mut v));
+            assert!(v.is_finite());
+        }
+    }
+}
+
+/// A finished state load has to tell the host to re-read the parameter values.
+///
+/// The host has no other way to find out: it asked the plugin to load a state,
+/// the plugin changed every parameter at once, and CLAP puts the burden of
+/// saying so on the plugin. Without this the host keeps showing, automating and
+/// reporting the values a fresh instance had, which are the defaults, while the
+/// plugin plays the restored ones. That is the mismatch the validator's
+/// `state-reproducibility-*` tests report.
+#[test]
+fn loading_state_asks_the_host_to_rescan_the_values() {
+    unsafe {
+        RESCANNED.store(0, Ordering::SeqCst);
+
+        let host = host_with(get_extension_with_params);
+        let plugin = create(&host);
+        let state: *const clap_plugin_state = ext(plugin, CLAP_EXT_STATE);
+
+        let mut saved: Vec<u8> = Vec::new();
+        let ostream = clap_ostream {
+            ctx: &mut saved as *mut _ as *mut c_void,
+            write: Some(write_stream),
+        };
+        assert!((*state).save.unwrap()(plugin, &ostream), "saving failed");
+
+        let plugin2 = create(&host);
+        let state2: *const clap_plugin_state = ext(plugin2, CLAP_EXT_STATE);
+        let mut ctx = ReadCtx {
+            data: saved,
+            pos: 0,
+        };
+        let istream = clap_istream {
+            ctx: &mut ctx as *mut _ as *mut c_void,
+            read: Some(read_stream),
+        };
+        assert!((*state2).load.unwrap()(plugin2, &istream), "loading failed");
+
+        assert_eq!(
+            RESCANNED.load(Ordering::SeqCst) & CLAP_PARAM_RESCAN_VALUES,
+            CLAP_PARAM_RESCAN_VALUES,
+            "the host was never asked to rescan the parameter values"
+        );
     }
 }
 
