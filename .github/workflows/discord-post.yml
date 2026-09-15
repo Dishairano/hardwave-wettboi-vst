@@ -1,0 +1,87 @@
+name: Discord post
+
+# Send the Discord post for a tag that already has a release, without building
+# anything. For when a release's own post did not go out: on 2026-09-15 the
+# v0.4.0 tag ran an older release.yml whose database step failed, which skips
+# the post step. Same message and same routing as release.yml: a clean tag goes
+# to DISCORD_WEBHOOK_URL, a tag with a "-" suffix to DISCORD_BETA_WEBHOOK_URL.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Existing tag to post (e.g. v0.4.0)'
+        required: true
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Post Discord changelog
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_BETA_WEBHOOK_URL: ${{ secrets.DISCORD_BETA_WEBHOOK_URL }}
+          VERSION: ${{ github.event.inputs.version }}
+          PLUGIN_NAME: "Hardwave WettBoi"
+        run: |
+          set -eu
+          # Release announcements (founder's rule, 2026-09-15): a clean tag gets its
+          # version post on the changelog webhook; a release candidate (any "-"
+          # suffix) notifies beta testers only, and founders are beta testers.
+          # An RC never posts on the public webhook: without a beta webhook
+          # secret it is skipped.
+          case "$VERSION" in
+            *-*)
+              HOOK="${DISCORD_BETA_WEBHOOK_URL:-}"
+              if [ -z "$HOOK" ]; then
+                echo "Release candidate ${VERSION}: no DISCORD_BETA_WEBHOOK_URL secret, not posting"
+                exit 0
+              fi
+              ;;
+            *)
+              HOOK="$DISCORD_WEBHOOK_URL"
+              ;;
+          esac
+          git fetch --tags --force >/dev/null 2>&1 || true
+          git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null || { echo "No tag ${VERSION} in this repo"; exit 1; }
+          BULLETS=$(git tag -l --format='%(contents)' "$VERSION" 2>/dev/null \
+            | grep '^[[:space:]]*[-*]' \
+            | sed -e 's/^[[:space:]]*[-*][[:space:]]*//' \
+                  -e 's/[[:space:]]*$//' \
+            || true)
+          if [ -z "$BULLETS" ]; then
+            BULLETS="Stability and maintenance updates"
+          fi
+
+          DESC_BODY=$(printf '%s\n' "$BULLETS" \
+            | sed -e '/^[[:space:]]*$/d' \
+                  -e 's/[[:space:]]*\.$//' \
+                  -e 's/^/- /' \
+                  -e 's/$/./')
+
+          DESCRIPTION=$(printf "**What's new**\n%s\n\nInstall or update via the **Hardwave Suite**." "$DESC_BODY")
+          PUB_DATE=$(date -u +"%-d %b %Y")
+          FOOTER="${PLUGIN_NAME} · published ${PUB_DATE}"
+          TITLE="${PLUGIN_NAME} ${VERSION}"
+
+          PAYLOAD=$(jq -n \
+            --arg title "$TITLE" \
+            --arg description "$DESCRIPTION" \
+            --arg footer "$FOOTER" \
+            '{
+              "embeds": [{
+                "title": $title,
+                "description": $description,
+                "color": 14427686,
+                "footer": { "text": $footer }
+              }]
+            }')
+
+          curl -fsS -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "$HOOK" >/dev/null
+          echo "Discord changelog posted for ${VERSION}"
