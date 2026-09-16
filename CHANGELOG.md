@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.1
+
+Two faults in how the plug-in hands its settings back to your DAW, both found by
+the automated testers rather than reported by anyone.
+
+- **Your settings came back, but the DAW did not know.** Reopening a project
+  restored every control inside WettBoi, and the plug-in never told the host to
+  re-read them. A host that trusts its own copy showed and automated the old
+  values, so a project could sound different from what the controls said.
+- **A damaged project file could take the whole DAW down.** Loading a corrupt or
+  foreign state made the plug-in ask for an impossible amount of memory, and the
+  failed request killed the host process, not just the plug-in. It now refuses
+  the state and carries on.
+- Crash reports from our own test runs no longer reach the crash dashboard, so a
+  real crash is not buried under our noise.
+
 ## 0.4.0
 
 Four things the founder reported, and the causes behind them.
