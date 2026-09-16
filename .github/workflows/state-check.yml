@@ -34,13 +34,13 @@ jobs:
           for f in *.tar.gz; do [ -e "$f" ] && tar xzf "$f"; done
           chmod +x clap-validator
 
-      - name: Run the tests under repair
+      - name: Run the whole validator suite
         env:
           NIH_LOG: stderr
           HW_NO_CRASH_REPORT: "1"
         run: |
           cp target/release/libhardwave_wettboi.so ./hardwave-wettboi.clap
-          ./clap-validator validate --in-process -t 'state-reproducibility|state-invalid|param-conversions' ./hardwave-wettboi.clap 2>&1 | tee out.txt || true
+          ./clap-validator validate --in-process ./hardwave-wettboi.clap 2>&1 | tee out.txt || true
           tail -3 out.txt
 
       - uses: actions/upload-artifact@v4
