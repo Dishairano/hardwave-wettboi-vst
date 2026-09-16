@@ -1,0 +1,50 @@
+name: Validator check
+
+# Temporary, branch only. Builds the CLAP on a GitHub runner (never on HQ, which is production
+# with 3.8 GB) and runs the validator tests we are working on, so a fix is proven before it is
+# tagged. Publishes nothing.
+on:
+  push:
+    branches: [debug/state-check]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Linux packages the editor links against
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev
+
+      - name: Build the plug-in
+        run: cargo build --release -p hardwave-wettboi
+
+      - name: Get the validator
+        run: |
+          curl -sL -o cv.zip https://github.com/free-audio/clap-validator/releases/download/0.4.1/clap-validator-0.4.1-127-g152b982-ubuntu-22.04.zip
+          unzip -q -o cv.zip
+          for f in *.tar.gz; do [ -e "$f" ] && tar xzf "$f"; done
+          chmod +x clap-validator
+
+      - name: Run the tests under repair
+        env:
+          NIH_LOG: stderr
+          HW_NO_CRASH_REPORT: "1"
+        run: |
+          cp target/release/libhardwave_wettboi.so ./hardwave-wettboi.clap
+          ./clap-validator validate --in-process -t 'state-reproducibility|state-invalid|param-conversions' ./hardwave-wettboi.clap 2>&1 | tee out.txt || true
+          tail -3 out.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validator-check
+          path: out.txt
