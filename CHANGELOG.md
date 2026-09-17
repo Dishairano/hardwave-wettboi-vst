@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.2
+
+Typing a number into a control now works everywhere, found by the automated
+testers rather than reported by anyone.
+
+- **Typed values were ignored on most controls.** Only a control whose text
+  happened to match its own unit accepted a typed number, so anything that
+  prints its own format (1.2 kHz, -12.0 dB, 75 %) simply refused what you
+  typed and snapped back. Every control takes a typed number now, with or
+  without the unit.
+- **A displayed value did not always survive being typed back in.** A control
+  with no formatter printed its raw value (1.2286583 ms), which does not
+  round trip. Values now print to six significant digits.
+
 ## 0.4.1
 
 Two faults in how the plug-in hands its settings back to your DAW, both found by
