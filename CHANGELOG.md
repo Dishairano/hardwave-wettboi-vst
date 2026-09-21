@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.3-rc1
+
+A crash when a DAW loads the plug-in, unloads it and loads it again, reported
+from the field with a crash dump by a producer running MPC desktop.
+
+- **WettBoi could take MPC down when its window was opened a second time.** The
+  editor's webview registers a Win32 window class from inside the plug-in, and
+  such a class outlives the plug-in that registered it. When MPC unloaded WettBoi
+  and loaded it again, the new window still pointed at code in the old, freed
+  copy, and the first message it received crashed the host. WettBoi now keeps
+  itself loaded for as long as the host runs, so that cannot happen. Windows
+  only; nothing changes on macOS or Linux. The same guard went into every
+  Hardwave plug-in.
+- **Our own test panics no longer show up as crash reports.** They were being
+  sent as if a released build had crashed on somebody's machine.
+
 ## 0.4.2
 
 Typing a number into a control now works everywhere, found by the automated
