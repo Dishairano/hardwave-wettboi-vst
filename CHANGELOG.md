@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.3-rc1
+## 0.4.3
 
 A crash when a DAW loads the plug-in, unloads it and loads it again, reported
 from the field with a crash dump by a producer running MPC desktop.
