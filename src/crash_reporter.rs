@@ -245,6 +245,9 @@ mod tests {
     /// needs to change with it, or every test panic starts being reported as a user crash again.
     #[test]
     fn test_runs_are_recognised_as_our_own() {
-        assert!(is_our_own_build(), "the test harness must count as our own build");
+        assert!(
+            is_our_own_build(),
+            "the test harness must count as our own build"
+        );
     }
 }
