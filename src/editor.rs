@@ -708,6 +708,85 @@ fn pin_own_module() -> bool {
     PINNED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// One line at each call site: the interface when it can be reached, a page that says why not when
+/// it cannot. Three platforms build the webview slightly differently, and none of them should have
+/// to spell this out.
+trait WithUrlOrOffline {
+    fn with_url_or_offline(self, url: &str) -> Self;
+}
+
+impl WithUrlOrOffline for wry::WebViewBuilder<'_> {
+    fn with_url_or_offline(self, url: &str) -> Self {
+        if interface_reachable(url) {
+            self.with_url(url)
+        } else {
+            self.with_html(offline_page(url))
+        }
+    }
+}
+
+/// Is the interface reachable right now?
+///
+/// The whole editor is a web page served from our own domain, so with no route to it the window
+/// draws nothing at all: two producers have reported a plug-in that opens "blank", and a blank
+/// window tells them nothing about why. This asks once, quickly, before the webview is built.
+///
+/// Anything other than a clear network failure counts as reachable: a redirect, a 403, a 500, all
+/// mean something answered, and the page itself handles those far better than a guess here would.
+/// Never called from the audio thread; `Editor::spawn` runs on the host's UI thread.
+fn interface_reachable(url: &str) -> bool {
+    match ureq::builder()
+        .timeout_connect(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .head(url)
+        .call()
+    {
+        Ok(_) => true,
+        // A status code is an answer: the server is there.
+        Err(ureq::Error::Status(_, _)) => true,
+        Err(e) => {
+            eprintln!("[HardwaveWettBoi] the interface is not reachable: {}", e);
+            false
+        }
+    }
+}
+
+/// What the window shows when the interface cannot be reached, instead of nothing.
+///
+/// Plain HTML with no request of its own, because the one thing we know here is that requests are
+/// failing. Trying again is a link back to the interface: if the connection has come back, the
+/// window simply loads.
+fn offline_page(url: &str) -> String {
+    format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>HardwaveWettBoi</title>
+<style>
+  html,body {{ margin:0; height:100%; background:#0a0a0b; color:#c8c8c8;
+    font:13px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }}
+  .box {{ height:100%; display:flex; align-items:center; justify-content:center; }}
+  .card {{ max-width:430px; padding:26px 28px; border:1px solid rgba(255,255,255,.09); border-radius:14px; }}
+  h1 {{ font-size:15px; margin:0 0 10px; color:#fff; }}
+  p {{ margin:0 0 10px; }}
+  ul {{ margin:0 0 14px; padding-left:18px; }} li {{ margin:3px 0; }}
+  a.retry {{ display:inline-block; padding:7px 14px; border-radius:8px; background:#DC2626;
+    color:#fff; text-decoration:none; font-weight:700; }}
+  .small {{ color:#6f6f6f; font-size:11.5px; margin-top:12px; }}
+</style></head><body><div class="box"><div class="card">
+<h1>The plug-in cannot reach its interface</h1>
+<p>The controls are served from hardwavestudios.com, and this computer could not get there just now.
+The audio side of the plug-in is unaffected: your project still plays.</p>
+<ul>
+  <li>Check this machine is online.</li>
+  <li>A firewall, a VPN or a studio network may be blocking the DAW rather than the browser.</li>
+  <li>If your DAW blocks internet access per plug-in, allow it for this one.</li>
+</ul>
+<a class="retry" href="{url}">Try again</a>
+<div class="small">If it keeps happening, write to support@hardwavestudios.com and say which DAW and which network you are on.</div>
+</div></div></body></html>"#,
+        url = url
+    )
+}
+
 #[cfg(target_os = "windows")]
 fn spawn_windows(
     raw_handle: usize,
@@ -810,7 +889,7 @@ fn spawn_windows(
     );
     use wry::WebViewBuilderExtWindows;
     let webview = wry::WebViewBuilder::with_web_context(&mut web_context)
-        .with_url(&url)
+        .with_url_or_offline(&url)
         .with_initialization_script(&init_js)
         .with_ipc_handler(move |msg| {
             handle_ipc(&ctx, &pmap, &msg.body(), raw_handle, &esize, &rtx);
@@ -891,7 +970,7 @@ fn spawn_unix(
             width, height
         );
         let webview = match wry::WebViewBuilder::with_web_context(&mut web_context)
-            .with_url(&url)
+            .with_url_or_offline(&url)
             .with_initialization_script(&init_js)
             .with_ipc_handler(move |msg| {
                 handle_ipc(&ctx, &pmap, msg.body(), raw_handle, &esize, &rtx);
@@ -998,7 +1077,7 @@ fn spawn_macos(
         width, height
     );
     let webview = match wry::WebViewBuilder::with_web_context(&mut web_context)
-        .with_url(&url)
+        .with_url_or_offline(&url)
         .with_initialization_script(&init_js)
         .with_ipc_handler(move |msg| {
             handle_ipc(&ctx, &pmap, &msg.body(), raw_handle, &esize, &rtx);
@@ -1129,6 +1208,34 @@ mod pin_tests {
         assert!(
             pin_own_module(),
             "asking twice must stay true, it is a one-time pin"
+        );
+    }
+}
+
+#[cfg(test)]
+mod offline_tests {
+    use super::*;
+
+    /// The page shown when the interface cannot be reached must be able to stand on its own: no
+    /// script, no stylesheet, no image, nothing that needs the connection that has just failed.
+    #[test]
+    fn offline_page_needs_nothing_from_the_network() {
+        let html = offline_page("https://example.com/vst/thing?token=abc");
+        assert!(
+            !html.contains("<script"),
+            "the offline page must not run script"
+        );
+        assert!(
+            !html.contains("src="),
+            "the offline page must not fetch anything"
+        );
+        assert!(
+            html.contains("https://example.com/vst/thing?token=abc"),
+            "trying again has to go back to the interface"
+        );
+        assert!(
+            html.contains("support@hardwavestudios.com"),
+            "say where to write when it keeps failing"
         );
     }
 }
