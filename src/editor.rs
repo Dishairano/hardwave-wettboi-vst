@@ -410,7 +410,8 @@ fn handle_ipc(
             } else if value.is_none() {
                 elog!(
                     "[HardwaveWettBoi] IPC set_param '{}': could not parse value {:?}",
-                    id, raw_value
+                    id,
+                    raw_value
                 );
             } else {
                 elog!("[HardwaveWettBoi] IPC set_param: unknown param id '{}'", id);
@@ -437,7 +438,12 @@ fn handle_ipc(
             } else {
                 elog!(
                     "[HardwaveWettBoi] IPC resize: out of bounds ({}x{} not in {}x{}–{}x{})",
-                    w, h, MIN_WIDTH, MIN_HEIGHT, MAX_WIDTH, MAX_HEIGHT
+                    w,
+                    h,
+                    MIN_WIDTH,
+                    MIN_HEIGHT,
+                    MAX_WIDTH,
+                    MAX_HEIGHT
                 );
             }
         }
@@ -525,7 +531,8 @@ impl Editor for WettBoiEditor {
         let (width, height) = self.scaled_size();
         elog!(
             "[HardwaveWettBoi] Editor size: {}x{} (scaled)",
-            width, height
+            width,
+            height
         );
 
         let version = env!("CARGO_PKG_VERSION");
@@ -768,7 +775,7 @@ fn interface_reachable(url: &str) -> bool {
             let reason = t.to_string();
             let definite = offline_is_certain(&reason);
             elog!(
-                "[HardwaveWettBoi] probe failed ({}) — {}",
+                "[HardwaveWettBoi] probe failed ({}): {}",
                 reason,
                 if definite {
                     "showing the offline page"
@@ -929,7 +936,8 @@ fn spawn_windows(
 
     elog!(
         "[HardwaveWettBoi] Creating WebView2 (Windows) {}x{} ...",
-        width, height
+        width,
+        height
     );
     use wry::WebViewBuilderExtWindows;
     let webview = wry::WebViewBuilder::with_web_context(&mut web_context)
@@ -1011,7 +1019,8 @@ fn spawn_unix(
 
         elog!(
             "[HardwaveWettBoi] Creating WebKitGTK/WebKit WebView {}x{} ...",
-            width, height
+            width,
+            height
         );
         let webview = match wry::WebViewBuilder::with_web_context(&mut web_context)
             .with_url_or_offline(&url)
@@ -1118,7 +1127,8 @@ fn spawn_macos(
 
     elog!(
         "[HardwaveWettBoi] Creating WKWebView {}x{} on the main thread ...",
-        width, height
+        width,
+        height
     );
     let webview = match wry::WebViewBuilder::with_web_context(&mut web_context)
         .with_url_or_offline(&url)
@@ -1276,9 +1286,10 @@ mod offline_tests {
         assert!(!offline_is_certain(
             "Invalid TLS certificate: UnknownIssuer"
         ));
-        assert!(!offline_is_certain("proxy: 407 Proxy Authentication Required"));
+        assert!(!offline_is_certain(
+            "proxy: 407 Proxy Authentication Required"
+        ));
     }
-
 
     /// The page shown when the interface cannot be reached must be able to stand on its own: no
     /// script, no stylesheet, no image, nothing that needs the connection that has just failed.

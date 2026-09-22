@@ -51,10 +51,7 @@ fn timestamp() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0) as i64;
     let (y, m, d, hh, mm, ss) = civil_from_unix(secs);
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}Z",
-        y, m, d, hh, mm, ss
-    )
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}Z", y, m, d, hh, mm, ss)
 }
 
 /// Days-to-civil after Howard Hinnant's algorithm, which is exact for every
