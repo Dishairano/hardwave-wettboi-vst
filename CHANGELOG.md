@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.4-rc2
+
+- Take the beta post's text from the CHANGELOG, not from the tag message
+- Answer the review on the state work
+
 ## 0.4.4-rc1
 
 Saved settings now come back the way you left them, and a damaged project cannot
