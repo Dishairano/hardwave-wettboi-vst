@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.4-rc1
+
+Saved settings now come back the way you left them, and a damaged project cannot
+take the plug-in down with it.
+
+- **Your DAW and WettBoi disagreed about every control after reopening a project.**
+  The values were restored correctly inside the plug-in, but nothing told the host
+  to read them again, so the DAW kept showing and automating what it believed a
+  fresh instance held. Reopening a project now refreshes the host's own view.
+- **A typed value could land one step away from itself.** A control with no
+  rounding printed its raw number, all nine digits, so reading that text back gave
+  a slightly different value and printing it again gave a different string. Values
+  round to what the control can actually hold.
+- **A damaged or foreign saved state is refused instead of crashing.** Loading
+  random bytes used to abort the whole host process.
+
 ## 0.4.3
 
 A crash when a DAW loads the plug-in, unloads it and loads it again, reported
