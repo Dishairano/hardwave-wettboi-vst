@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.4-rc2
+
+Two changes to what happens when the interface does not appear, so the next
+report of an empty window does not have to start with questions.
+
+- **A window that stays empty now leaves a log we can read.** Everything the
+  editor knew is written to a file: whether it found your licence token, which
+  address it loaded, whether the WebView was created, whether the interface
+  answered. All of it used to go to a console no DAW shows. It is now also
+  appended to `%APPDATA%\hardwave\wettboi-editor.log` (on macOS
+  `~/Library/Application Support/hardwave/wettboi-editor.log`). Send that file
+  with a report and we can usually see the cause in it. It holds no audio, no
+  project data and no licence token.
+- **A slow network no longer replaces a working interface with an apology.**
+  Before the window opens, the plug-in asks whether the interface can be
+  reached, and anything short of an answer counted as offline: a timeout, a
+  proxy, a firewall that allows the browser but not the DAW. Only a refused
+  connection or a name that does not resolve counts now. Everything else loads
+  the interface and lets the WebView try, because it often gets through where
+  we do not.
+
 ## 0.4.4-rc1
 
 Saved settings now come back the way you left them, and a damaged project cannot

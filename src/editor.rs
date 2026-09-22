@@ -82,7 +82,7 @@ impl raw_window_handle::HasDisplayHandle for RwhWrapper {
 
 /// Build a map of param ID strings to ParamPtr for the IPC handler.
 fn build_param_map(params: &WettBoiParams) -> HashMap<String, nih_plug::prelude::ParamPtr> {
-    eprintln!("[HardwaveWettBoi] Building param map...");
+    elog!("[HardwaveWettBoi] Building param map...");
     let mut map = HashMap::new();
 
     // Reverb
@@ -134,7 +134,7 @@ fn build_param_map(params: &WettBoiParams) -> HashMap<String, nih_plug::prelude:
     map.insert("bypass".into(), params.bypass.as_ptr());
     map.insert("routing".into(), params.routing.as_ptr());
 
-    eprintln!("[HardwaveWettBoi] Param map built: {} entries", map.len());
+    elog!("[HardwaveWettBoi] Param map built: {} entries", map.len());
     map
 }
 
@@ -372,7 +372,7 @@ fn handle_ipc(
     let msg: serde_json::Value = match serde_json::from_str(raw_body) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!(
+            elog!(
                 "[HardwaveWettBoi] IPC parse error: {} — raw: {}",
                 e,
                 &raw_body[..raw_body.len().min(200)]
@@ -408,12 +408,12 @@ fn handle_ipc(
                     context.raw_end_set_parameter(*ptr);
                 }
             } else if value.is_none() {
-                eprintln!(
+                elog!(
                     "[HardwaveWettBoi] IPC set_param '{}': could not parse value {:?}",
                     id, raw_value
                 );
             } else {
-                eprintln!("[HardwaveWettBoi] IPC set_param: unknown param id '{}'", id);
+                elog!("[HardwaveWettBoi] IPC set_param: unknown param id '{}'", id);
             }
         }
         "release_focus" => {
@@ -426,7 +426,7 @@ fn handle_ipc(
         "resize" => {
             let w = msg.get("width").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let h = msg.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            eprintln!("[HardwaveWettBoi] IPC resize: {}x{}", w, h);
+            elog!("[HardwaveWettBoi] IPC resize: {}x{}", w, h);
             if (MIN_WIDTH..=MAX_WIDTH).contains(&w) && (MIN_HEIGHT..=MAX_HEIGHT).contains(&h) {
                 *editor_size.lock() = (w, h);
                 if context.request_resize() {
@@ -435,30 +435,30 @@ fn handle_ipc(
                     }
                 }
             } else {
-                eprintln!(
+                elog!(
                     "[HardwaveWettBoi] IPC resize: out of bounds ({}x{} not in {}x{}–{}x{})",
                     w, h, MIN_WIDTH, MIN_HEIGHT, MAX_WIDTH, MAX_HEIGHT
                 );
             }
         }
         "save_token" => {
-            eprintln!("[HardwaveWettBoi] IPC save_token: persisting to disk");
+            elog!("[HardwaveWettBoi] IPC save_token: persisting to disk");
             if let Some(token) = msg.get("token").and_then(|v| v.as_str()) {
                 match auth::save_token(token) {
-                    Ok(()) => eprintln!("[HardwaveWettBoi] Token saved successfully"),
-                    Err(e) => eprintln!("[HardwaveWettBoi] Token save FAILED: {}", e),
+                    Ok(()) => elog!("[HardwaveWettBoi] Token saved successfully"),
+                    Err(e) => elog!("[HardwaveWettBoi] Token save FAILED: {}", e),
                 }
             }
         }
         "clear_token" => {
-            eprintln!("[HardwaveWettBoi] IPC clear_token: removing from disk");
+            elog!("[HardwaveWettBoi] IPC clear_token: removing from disk");
             match auth::clear_token() {
-                Ok(()) => eprintln!("[HardwaveWettBoi] Token cleared"),
-                Err(e) => eprintln!("[HardwaveWettBoi] Token clear FAILED: {}", e),
+                Ok(()) => elog!("[HardwaveWettBoi] Token cleared"),
+                Err(e) => elog!("[HardwaveWettBoi] Token clear FAILED: {}", e),
             }
         }
         other => {
-            eprintln!("[HardwaveWettBoi] IPC unknown message type: '{}'", other);
+            elog!("[HardwaveWettBoi] IPC unknown message type: '{}'", other);
         }
     }
 }
@@ -502,7 +502,14 @@ impl Editor for WettBoiEditor {
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
         let scale = *self.scale_factor.lock();
-        eprintln!(
+        // First line of every run, so a log sent to support says which build
+        // and which machine wrote the lines under it.
+        elog!(
+            "[HardwaveWettBoi] ---- editor opening: v{} on {} ----",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS
+        );
+        elog!(
             "[HardwaveWettBoi] Editor::spawn — scale_factor={:.2}, auth_token={}",
             scale,
             if self.auth_token.is_some() {
@@ -516,7 +523,7 @@ impl Editor for WettBoiEditor {
 
         let packet_rx = Arc::clone(&self.packet_rx);
         let (width, height) = self.scaled_size();
-        eprintln!(
+        elog!(
             "[HardwaveWettBoi] Editor size: {}x{} (scaled)",
             width, height
         );
@@ -526,7 +533,7 @@ impl Editor for WettBoiEditor {
             Some(t) => format!("{}?token={}&v={}", WETTBOI_URL, t, version),
             None => format!("{}?v={}", WETTBOI_URL, version),
         };
-        eprintln!(
+        elog!(
             "[HardwaveWettBoi] Loading URL: {} (token {})",
             WETTBOI_URL,
             if self.auth_token.is_some() {
@@ -538,9 +545,9 @@ impl Editor for WettBoiEditor {
 
         let param_map = Arc::new(build_param_map(&self.params));
         let init_js = ipc_init_script(&self.params, 150.0);
-        eprintln!("[HardwaveWettBoi] Init script: {} bytes", init_js.len());
+        elog!("[HardwaveWettBoi] Init script: {} bytes", init_js.len());
         let raw_handle = extract_raw_handle(&parent);
-        eprintln!("[HardwaveWettBoi] Parent window handle: 0x{:x}", raw_handle);
+        elog!("[HardwaveWettBoi] Parent window handle: 0x{:x}", raw_handle);
 
         let (resize_tx_val, resize_rx) = unbounded::<(u32, u32)>();
         *self.resize_tx.lock() = Some(resize_tx_val);
@@ -550,7 +557,7 @@ impl Editor for WettBoiEditor {
 
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[HardwaveWettBoi] Platform: Windows — using TCP polling bridge");
+            elog!("[HardwaveWettBoi] Platform: Windows — using TCP polling bridge");
             spawn_windows(
                 raw_handle,
                 url,
@@ -585,7 +592,7 @@ impl Editor for WettBoiEditor {
 
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         {
-            eprintln!("[HardwaveWettBoi] Platform: Unix — using evaluate_script bridge");
+            elog!("[HardwaveWettBoi] Platform: Unix — using evaluate_script bridge");
             spawn_unix(
                 raw_handle,
                 url,
@@ -700,9 +707,9 @@ fn pin_own_module() -> bool {
         };
         PINNED.store(ok != 0, std::sync::atomic::Ordering::Relaxed);
         if ok == 0 {
-            eprintln!("[HardwaveWettBoi] could not pin the module; a reload may crash the host");
+            elog!("[HardwaveWettBoi] could not pin the module; a reload may crash the host");
         } else {
-            eprintln!("[HardwaveWettBoi] module pinned for the life of the process");
+            elog!("[HardwaveWettBoi] module pinned for the life of the process");
         }
     });
     PINNED.load(std::sync::atomic::Ordering::Relaxed)
@@ -734,10 +741,22 @@ impl WithUrlOrOffline for wry::WebViewBuilder<'_> {
 /// Anything other than a clear network failure counts as reachable: a redirect, a 403, a 500, all
 /// mean something answered, and the page itself handles those far better than a guess here would.
 /// Never called from the audio thread; `Editor::spawn` runs on the host's UI thread.
+/// Ask, before the WebView opens, whether the interface can be reached.
+///
+/// Answering "no" costs the user their whole window, so this only answers "no"
+/// when it is sure. The WebView has its own network stack: it follows the
+/// system proxy, it has its own cache, and on Windows it runs in a process the
+/// firewall may allow where it blocks the DAW. A slow or half-open network
+/// therefore says nothing about whether the page would have loaded, and a
+/// timeout here used to replace a working interface with an apology.
+///
+/// Only a refused connection or a name that does not resolve is treated as
+/// offline. Anything else — a timeout, a TLS error, a proxy that will not talk
+/// to us — loads the URL and lets the WebView try, because it may well succeed.
 fn interface_reachable(url: &str) -> bool {
     match ureq::builder()
-        .timeout_connect(std::time::Duration::from_secs(3))
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout_connect(std::time::Duration::from_millis(1500))
+        .timeout(std::time::Duration::from_secs(3))
         .build()
         .head(url)
         .call()
@@ -745,9 +764,19 @@ fn interface_reachable(url: &str) -> bool {
         Ok(_) => true,
         // A status code is an answer: the server is there.
         Err(ureq::Error::Status(_, _)) => true,
-        Err(e) => {
-            eprintln!("[HardwaveWettBoi] the interface is not reachable: {}", e);
-            false
+        Err(ureq::Error::Transport(t)) => {
+            let reason = t.to_string();
+            let definite = offline_is_certain(&reason);
+            elog!(
+                "[HardwaveWettBoi] probe failed ({}) — {}",
+                reason,
+                if definite {
+                    "showing the offline page"
+                } else {
+                    "loading the interface anyway, the WebView may get through"
+                }
+            );
+            !definite
         }
     }
 }
@@ -757,6 +786,21 @@ fn interface_reachable(url: &str) -> bool {
 /// Plain HTML with no request of its own, because the one thing we know here is that requests are
 /// failing. Trying again is a link back to the interface: if the connection has come back, the
 /// window simply loads.
+/// Does this transport error mean the machine cannot get there at all?
+///
+/// A refused connection and a name that does not resolve are answers: nothing
+/// is listening, or the host does not exist for this machine. A timeout is not
+/// an answer, and neither is a TLS or proxy failure, because the WebView uses
+/// neither our sockets nor our trust store.
+fn offline_is_certain(reason: &str) -> bool {
+    let r = reason.to_ascii_lowercase();
+    r.contains("refused")
+        || r.contains("dns")
+        || r.contains("resolve")
+        || r.contains("unreachable")
+        || r.contains("no route")
+}
+
 fn offline_page(url: &str) -> String {
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><title>HardwaveWettBoi</title>
@@ -810,7 +854,7 @@ fn spawn_windows(
     let listener = match TcpListener::bind("127.0.0.1:0") {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[HardwaveWettBoi] failed to bind TCP: {}", e);
+            elog!("[HardwaveWettBoi] failed to bind TCP: {}", e);
             return Box::new(EditorHandle {
                 running: running_clone,
                 _webview: None,
@@ -821,7 +865,7 @@ fn spawn_windows(
         }
     };
     let port = listener.local_addr().unwrap().port();
-    eprintln!("[HardwaveWettBoi] TCP server bound on 127.0.0.1:{}", port);
+    elog!("[HardwaveWettBoi] TCP server bound on 127.0.0.1:{}", port);
     let latest_json = Arc::new(Mutex::new(String::from("{}")));
     let latest_json_server = Arc::clone(&latest_json);
     let running_server = Arc::clone(&running);
@@ -877,13 +921,13 @@ fn spawn_windows(
     let rtx = Arc::clone(&resize_tx);
 
     let data_dir = webview2_data_dir();
-    eprintln!("[HardwaveWettBoi] WebView2 data dir: {:?}", data_dir);
+    elog!("[HardwaveWettBoi] WebView2 data dir: {:?}", data_dir);
     let _ = std::fs::create_dir_all(&data_dir);
     let mut web_context = wry::WebContext::new(Some(data_dir));
 
     let wrapper = RwhWrapper(raw_handle);
 
-    eprintln!(
+    elog!(
         "[HardwaveWettBoi] Creating WebView2 (Windows) {}x{} ...",
         width, height
     );
@@ -909,11 +953,11 @@ fn spawn_windows(
 
     let webview = match webview {
         Ok(wv) => {
-            eprintln!("[HardwaveWettBoi] WebView created successfully");
+            elog!("[HardwaveWettBoi] WebView created successfully");
             Some(wv)
         }
         Err(e) => {
-            eprintln!("[HardwaveWettBoi] WebView creation FAILED: {}", e);
+            elog!("[HardwaveWettBoi] WebView creation FAILED: {}", e);
             None
         }
     };
@@ -949,9 +993,9 @@ fn spawn_unix(
     let editor_thread = std::thread::spawn(move || {
         #[cfg(target_os = "linux")]
         {
-            eprintln!("[HardwaveWettBoi] Initialising GTK...");
+            elog!("[HardwaveWettBoi] Initialising GTK...");
             let _ = gtk::init();
-            eprintln!("[HardwaveWettBoi] GTK initialised");
+            elog!("[HardwaveWettBoi] GTK initialised");
         }
 
         let wrapper = RwhWrapper(raw_handle);
@@ -961,11 +1005,11 @@ fn spawn_unix(
         let rtx = Arc::clone(&resize_tx);
 
         let data_dir = webview_data_dir();
-        eprintln!("[HardwaveWettBoi] WebView data dir: {:?}", data_dir);
+        elog!("[HardwaveWettBoi] WebView data dir: {:?}", data_dir);
         let _ = std::fs::create_dir_all(&data_dir);
         let mut web_context = wry::WebContext::new(Some(data_dir));
 
-        eprintln!(
+        elog!(
             "[HardwaveWettBoi] Creating WebKitGTK/WebKit WebView {}x{} ...",
             width, height
         );
@@ -986,16 +1030,16 @@ fn spawn_unix(
             .build_as_child(&wrapper)
         {
             Ok(wv) => {
-                eprintln!("[HardwaveWettBoi] WebView created successfully (Unix)");
+                elog!("[HardwaveWettBoi] WebView created successfully (Unix)");
                 wv
             }
             Err(e) => {
-                eprintln!("[HardwaveWettBoi] WebView creation FAILED (Unix): {}", e);
+                elog!("[HardwaveWettBoi] WebView creation FAILED (Unix): {}", e);
                 return;
             }
         };
 
-        eprintln!("[HardwaveWettBoi] Entering editor event loop");
+        elog!("[HardwaveWettBoi] Entering editor event loop");
         while running.load(Ordering::Relaxed) {
             while let Ok((w, h)) = resize_rx.try_recv() {
                 let _ = webview.set_bounds(wry::Rect {
@@ -1068,11 +1112,11 @@ fn spawn_macos(
     let rtx = Arc::clone(&resize_tx);
 
     let data_dir = webview_data_dir();
-    eprintln!("[HardwaveWettBoi] WebView data dir: {:?}", data_dir);
+    elog!("[HardwaveWettBoi] WebView data dir: {:?}", data_dir);
     let _ = std::fs::create_dir_all(&data_dir);
     let mut web_context = wry::WebContext::new(Some(data_dir));
 
-    eprintln!(
+    elog!(
         "[HardwaveWettBoi] Creating WKWebView {}x{} on the main thread ...",
         width, height
     );
@@ -1090,11 +1134,11 @@ fn spawn_macos(
         .build_as_child(&wrapper)
     {
         Ok(w) => {
-            eprintln!("[HardwaveWettBoi] WKWebView created");
+            elog!("[HardwaveWettBoi] WKWebView created");
             w
         }
         Err(e) => {
-            eprintln!("[HardwaveWettBoi] WebView creation FAILED (macOS): {e}");
+            elog!("[HardwaveWettBoi] WebView creation FAILED (macOS): {e}");
             return Box::new(EditorHandle {
                 running,
                 _webview: None,
@@ -1133,7 +1177,7 @@ fn spawn_macos(
             let st = unsafe { &mut *p };
 
             if !st.running.load(Ordering::Relaxed) {
-                eprintln!("[HardwaveWettBoi] Editor closed, releasing WebView");
+                elog!("[HardwaveWettBoi] Editor closed, releasing WebView");
                 unsafe { drop(Box::from_raw(p)) };
                 return;
             }
@@ -1160,7 +1204,7 @@ fn spawn_macos(
         });
     }
 
-    eprintln!("[HardwaveWettBoi] Entering editor pump on the main queue");
+    elog!("[HardwaveWettBoi] Entering editor pump on the main queue");
     tick(pump);
 
     Box::new(EditorHandle {
@@ -1186,7 +1230,7 @@ unsafe impl Send for EditorHandle {}
 
 impl Drop for EditorHandle {
     fn drop(&mut self) {
-        eprintln!("[HardwaveWettBoi] EditorHandle::drop — shutting down editor");
+        elog!("[HardwaveWettBoi] EditorHandle::drop — shutting down editor");
         self.running.store(false, Ordering::Relaxed);
     }
 }
@@ -1215,6 +1259,26 @@ mod pin_tests {
 #[cfg(test)]
 mod offline_tests {
     use super::*;
+
+    #[test]
+    fn only_a_definite_failure_takes_the_interface_away() {
+        // Answers: nothing is there for this machine.
+        assert!(offline_is_certain("Connection refused (os error 111)"));
+        assert!(offline_is_certain(
+            "Dns Failed: failed to lookup address information"
+        ));
+        assert!(offline_is_certain("Network is unreachable"));
+        assert!(offline_is_certain("No route to host"));
+
+        // Not answers: the WebView may still get the page.
+        assert!(!offline_is_certain("timed out reading response"));
+        assert!(!offline_is_certain("Connection timed out"));
+        assert!(!offline_is_certain(
+            "Invalid TLS certificate: UnknownIssuer"
+        ));
+        assert!(!offline_is_certain("proxy: 407 Proxy Authentication Required"));
+    }
+
 
     /// The page shown when the interface cannot be reached must be able to stand on its own: no
     /// script, no stylesheet, no image, nothing that needs the connection that has just failed.

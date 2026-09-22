@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 mod auth;
 mod clap_export;
+#[macro_use]
+pub mod diag;
 pub mod dsp;
 pub mod editor;
 pub mod params;
