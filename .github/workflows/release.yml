@@ -293,7 +293,21 @@ jobs:
           git fetch --tags --force >/dev/null 2>&1 || true
           # The house format: sections (New features, Bug fixes, Improvements) and bullets
           # written with -, * or the bullet character. Sections come through as bold lines.
-          BULLETS=$(git tag -l --format='%(contents)' "$VERSION" 2>/dev/null \
+          # The bullets come from CHANGELOG.md, which is the one written for people. They used to be
+          # read from the tag's own message, so a tag made with a one line message ("WettBoi 0.4.4-rc1")
+          # produced a beta post that said "Stability and maintenance updates" and nothing else. Four
+          # release candidates went out like that on 21 and 22 September. The tag message is still the
+          # fallback, for a release tagged before this existed.
+          SECTION=$(awk -v want="${VERSION#v}" '
+                function strip(s) { sub(/^[[:space:]]*##[[:space:]]*v?/, "", s); sub(/[[:space:]].*$/, "", s);
+                                    sub(/[[:space:]]*$/, "", s); return s }
+                /^##[[:space:]]/ { if (taking) exit; taking = (strip($0) == want); next }
+                taking { print }
+              ' CHANGELOG.md 2>/dev/null || true)
+          if [ -z "$SECTION" ]; then
+            SECTION=$(git tag -l --format='%(contents)' "$VERSION" 2>/dev/null || true)
+          fi
+          BULLETS=$(printf '%s\n' "$SECTION" \
             | awk '
                 /^[[:space:]]*[-*\xe2\x80\xa2][[:space:]]+/ {
                   sub(/^[[:space:]]*[-*\xe2\x80\xa2][[:space:]]+/, "");
