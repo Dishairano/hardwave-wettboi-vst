@@ -270,6 +270,14 @@ unsafe extern "C" fn state_load(plugin: *const clap_plugin, stream: *const clap_
         return false;
     }
 
+    // The bytes themselves are not inspected here, and that is deliberate. What this function owes
+    // the framework is a stream whose length it has already agreed to, which is the part that used
+    // to abort the process: the framework read the prefix and reserved that many bytes before
+    // anything could refuse it. Whether the body is valid UTF-8 or well formed JSON is the
+    // deserializer's question, and it answers by returning an error rather than panicking; a value
+    // that parses but is out of range is caught after that by filter_state in lib.rs. Checking it
+    // twice here would mean a second opinion about our own format living in two places.
+    //
     // The prefix and the body together, because that is what the framework
     // expects to read.
     let mut buffer = vec![0u8; STATE_LENGTH_PREFIX_BYTES + length as usize];

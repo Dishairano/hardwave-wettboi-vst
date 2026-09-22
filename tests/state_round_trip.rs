@@ -188,6 +188,11 @@ fn name_of(info: &clap_param_info) -> String {
 /// project depends on.
 #[test]
 fn every_parameter_survives_a_save_and_a_load() {
+    // SAFETY: the whole test drives the plug-in through its C ABI, the same calls a DAW
+    // makes. Every pointer used below comes from create() or from the plug-in's own
+    // get_extension, both of which return either null or a pointer valid for the life of
+    // the instance; each is checked before use and the instance is destroyed at the end,
+    // on this thread only, which is what the CLAP main-thread contract requires.
     unsafe {
         let host = host();
         let plugin = create(&host);
@@ -287,6 +292,11 @@ fn every_parameter_survives_a_save_and_a_load() {
 /// the last place away, and the next conversion printed a different string.
 #[test]
 fn text_conversions_are_a_fixed_point() {
+    // SAFETY: the whole test drives the plug-in through its C ABI, the same calls a DAW
+    // makes. Every pointer used below comes from create() or from the plug-in's own
+    // get_extension, both of which return either null or a pointer valid for the life of
+    // the instance; each is checked before use and the instance is destroyed at the end,
+    // on this thread only, which is what the CLAP main-thread contract requires.
     unsafe {
         let host = host();
         let plugin = create(&host);
@@ -330,6 +340,11 @@ fn text_conversions_are_a_fixed_point() {
 /// State that is not ours must be refused, and the plugin must keep running.
 #[test]
 fn a_corrupt_state_is_refused() {
+    // SAFETY: the whole test drives the plug-in through its C ABI, the same calls a DAW
+    // makes. Every pointer used below comes from create() or from the plug-in's own
+    // get_extension, both of which return either null or a pointer valid for the life of
+    // the instance; each is checked before use and the instance is destroyed at the end,
+    // on this thread only, which is what the CLAP main-thread contract requires.
     unsafe {
         let host = host();
         let plugin = create(&host);
@@ -374,6 +389,11 @@ fn a_corrupt_state_is_refused() {
 /// reporting a failed assertion. That is the bug.
 #[test]
 fn random_state_is_refused_without_crashing() {
+    // SAFETY: the whole test drives the plug-in through its C ABI, the same calls a DAW
+    // makes. Every pointer used below comes from create() or from the plug-in's own
+    // get_extension, both of which return either null or a pointer valid for the life of
+    // the instance; each is checked before use and the instance is destroyed at the end,
+    // on this thread only, which is what the CLAP main-thread contract requires.
     unsafe {
         let host = host();
         let plugin = create(&host);
@@ -427,6 +447,11 @@ fn random_state_is_refused_without_crashing() {
 /// `state-reproducibility-*` tests report.
 #[test]
 fn loading_state_asks_the_host_to_rescan_the_values() {
+    // SAFETY: the whole test drives the plug-in through its C ABI, the same calls a DAW
+    // makes. Every pointer used below comes from create() or from the plug-in's own
+    // get_extension, both of which return either null or a pointer valid for the life of
+    // the instance; each is checked before use and the instance is destroyed at the end,
+    // on this thread only, which is what the CLAP main-thread contract requires.
     unsafe {
         RESCANNED.store(0, Ordering::SeqCst);
 
