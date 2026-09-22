@@ -1,10 +1,20 @@
 # Changelog
 
-## 0.4.4-rc2
+## 0.4.4
 
-Two changes to what happens when the interface does not appear, so the next
-report of an empty window does not have to start with questions.
+Saved settings come back the way you left them, a damaged project cannot take the
+plug-in down with it, and a window that stays empty now leaves a log we can read.
 
+- **Your DAW and WettBoi disagreed about every control after reopening a project.**
+  The values were restored correctly inside the plug-in, but nothing told the host
+  to read them again, so the DAW kept showing and automating what it believed a
+  fresh instance held. Reopening a project now refreshes the host's own view.
+- **A typed value could land one step away from itself.** A control with no
+  rounding printed its raw number, all nine digits, so reading that text back gave
+  a slightly different value and printing it again gave a different string. Values
+  round to what the control can actually hold.
+- **A damaged or foreign saved state is refused instead of crashing.** Loading
+  random bytes used to abort the whole host process.
 - **A window that stays empty now leaves a log we can read.** Everything the
   editor knew is written to a file: whether it found your licence token, which
   address it loaded, whether the WebView was created, whether the interface
@@ -20,22 +30,6 @@ report of an empty window does not have to start with questions.
   connection or a name that does not resolve counts now. Everything else loads
   the interface and lets the WebView try, because it often gets through where
   we do not.
-
-## 0.4.4-rc1
-
-Saved settings now come back the way you left them, and a damaged project cannot
-take the plug-in down with it.
-
-- **Your DAW and WettBoi disagreed about every control after reopening a project.**
-  The values were restored correctly inside the plug-in, but nothing told the host
-  to read them again, so the DAW kept showing and automating what it believed a
-  fresh instance held. Reopening a project now refreshes the host's own view.
-- **A typed value could land one step away from itself.** A control with no
-  rounding printed its raw number, all nine digits, so reading that text back gave
-  a slightly different value and printing it again gave a different string. Values
-  round to what the control can actually hold.
-- **A damaged or foreign saved state is refused instead of crashing.** Loading
-  random bytes used to abort the whole host process.
 
 ## 0.4.3
 
