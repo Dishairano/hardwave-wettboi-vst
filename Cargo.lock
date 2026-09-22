@@ -861,6 +861,7 @@ dependencies = [
 name = "hardwave-wettboi"
 version = "0.4.3"
 dependencies = [
+ "clap-sys",
  "crossbeam-channel",
  "dirs",
  "dispatch",

@@ -22,6 +22,12 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 # ── nih-plug (VST3 / CLAP framework) ─────────────────────────────────────────
 nih_plug = { git = "https://github.com/Dishairano/nih-plug-hardwave.git", branch = "main" }
 
+# ── The raw CLAP ABI ─────────────────────────────────────────────────────────
+# src/clap_export.rs exports the CLAP entry point itself so it can check a saved
+# state's length before the framework allocates for it. Pinned to the revision
+# nih-plug already builds, so this adds a name to the build and not a crate.
+clap-sys = { git = "https://github.com/micahrj/clap-sys.git", rev = "25d7f53fdb6363ad63fbd80049cb7a42a97ac156" }
+
 # ── GUI: wry WebView ─────────────────────────────────────────────────────────
 wry = { version = "0.46", optional = true }
 
