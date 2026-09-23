@@ -11,6 +11,17 @@ The window opens when the DAW loads WettBoi twice.
   window stayed empty with nothing on screen to say why. The second copy now
   takes a folder of its own, and the editor log records which folder each one
   used.
+- **Your licence token is no longer written into the editor log.** Before opening
+  the window the plug-in asks whether the interface can be reached, and that
+  question carried the token in its address. When the question failed, the whole
+  address went into the log we ask you to send us. The question no longer carries
+  the token, and the log no longer holds it. If a token happened to contain a
+  word like "refused", it could also make the plug-in decide you were offline
+  when you were not; it cannot any more.
+- **A slow name server no longer counts as being offline.** Waiting too long for
+  an answer arrived looking the same as a name that does not exist, and the
+  plug-in showed the offline page instead of the interface. Only a real refusal
+  counts now.
 
 ## 0.4.4
 

@@ -841,10 +841,17 @@ fn transport_reason(t: &ureq::Transport) -> String {
 /// or a failed connect can be certain; a TLS setup failure is also reported as a failed connect by
 /// ureq, which is why the cause is read as well as the kind.
 fn offline_is_certain(kind: ureq::ErrorKind, reason: &str) -> bool {
+    let r = reason.to_ascii_lowercase();
+    // ureq reports whatever the resolver returned as a DNS failure, and our own deadline runs
+    // through the resolver too. A name server that is slow to answer therefore arrives here
+    // looking exactly like a name that does not exist. A machine that timed out may be on a
+    // network the WebView gets through, so a timeout is never a certain answer.
+    if r.contains("timed out") || r.contains("timeout") || r.contains("would block") {
+        return false;
+    }
     match kind {
         ureq::ErrorKind::Dns => true,
         ureq::ErrorKind::ConnectionFailed => {
-            let r = reason.to_ascii_lowercase();
             r.contains("refused") || r.contains("unreachable") || r.contains("no route")
         }
         _ => false,
@@ -1377,6 +1384,13 @@ mod offline_tests {
         assert!(offline_is_certain(
             ConnectionFailed,
             "Connection Failed: Connect error: No route to host (os error 113)"
+        ));
+
+        // A slow name server is not a missing name: our own deadline runs through the resolver,
+        // so a timeout arrives here wearing the DNS label.
+        assert!(!offline_is_certain(
+            Dns,
+            "Dns Failed: resolve dns name 'hardwavestudios.com:443': timed out"
         ));
 
         // Not answers: the WebView may still get the page.
