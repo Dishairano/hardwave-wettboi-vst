@@ -922,58 +922,102 @@ fn spawn_windows(
     );
 
     let init_js = format!("{}\n{}", base_init_js, poll_script);
-    let ctx = Arc::clone(&context);
-    let pmap = Arc::clone(&param_map);
-    let esize = Arc::clone(&editor_size);
-    let rtx = Arc::clone(&resize_tx);
-
-    let data_dir = webview2_data_dir();
-    elog!("[HardwaveWettBoi] WebView2 data dir: {:?}", data_dir);
-    let _ = std::fs::create_dir_all(&data_dir);
-    let mut web_context = wry::WebContext::new(Some(data_dir));
+    // A WebView2 environment owns its user data folder for as long as it lives, and a second
+    // environment cannot open a folder the first still holds. MPC loads this plug-in twice in one
+    // process: once the module pin stopped the reload crash, the second load started failing here
+    // instead, and a failure here leaves an empty window. So the shared folder is tried first,
+    // because that is where the sign-in lives, and a folder of this instance's own is tried when
+    // the shared one is taken.
+    // Both loads are in one process, so the process id tells them apart from nothing. The second
+    // one takes a fixed second folder, which keeps its sign-in between sessions like the first.
+    // Only a third instance needs a folder named after the moment it opened, and that one is
+    // rare enough to be worth the clutter it leaves behind.
+    let shared_dir = webview2_data_dir();
+    let name = shared_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "wettboi-webview2".to_string());
+    let second_dir = shared_dir.with_file_name(format!("{name}-2"));
+    let unique_dir = shared_dir.with_file_name(format!(
+        "{name}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
 
     let wrapper = RwhWrapper(raw_handle);
+    let mut webview = None;
+    let mut web_context = None;
 
-    elog!(
-        "[HardwaveWettBoi] Creating WebView2 (Windows) {}x{} ...",
-        width,
-        height
-    );
-    use wry::WebViewBuilderExtWindows;
-    let webview = wry::WebViewBuilder::with_web_context(&mut web_context)
-        .with_url_or_offline(&url)
-        .with_initialization_script(&init_js)
-        .with_ipc_handler(move |msg| {
-            handle_ipc(&ctx, &pmap, &msg.body(), raw_handle, &esize, &rtx);
-        })
-        .with_bounds(wry::Rect {
-            position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
-            size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(width as f64, height as f64)),
-        })
-        .with_transparent(false)
-        .with_devtools(false)
-        // Disable WebView2 browser accelerator keys (Ctrl+P / Ctrl+S /
-        // Ctrl+R / F5 / F12 / Ctrl+Shift+I) at the OS level — belt and
-        // braces with the JS keydown blocker.
-        .with_browser_accelerator_keys(false)
-        .with_background_color((10, 10, 11, 255))
-        .build(&wrapper);
+    for dir in [shared_dir, second_dir, unique_dir] {
+        elog!("[HardwaveWettBoi] WebView2 data dir: {:?}", dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let mut context_attempt = wry::WebContext::new(Some(dir.clone()));
 
-    let webview = match webview {
-        Ok(wv) => {
-            elog!("[HardwaveWettBoi] WebView created successfully");
-            Some(wv)
+        let ctx = Arc::clone(&context);
+        let pmap = Arc::clone(&param_map);
+        let esize = Arc::clone(&editor_size);
+        let rtx = Arc::clone(&resize_tx);
+
+        elog!(
+            "[HardwaveWettBoi] Creating WebView2 (Windows) {}x{} ...",
+            width,
+            height
+        );
+        use wry::WebViewBuilderExtWindows;
+        let built = wry::WebViewBuilder::with_web_context(&mut context_attempt)
+            .with_url_or_offline(&url)
+            .with_initialization_script(&init_js)
+            .with_ipc_handler(move |msg| {
+                handle_ipc(&ctx, &pmap, &msg.body(), raw_handle, &esize, &rtx);
+            })
+            .with_bounds(wry::Rect {
+                position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
+                size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(
+                    width as f64,
+                    height as f64,
+                )),
+            })
+            .with_transparent(false)
+            .with_devtools(false)
+            // Disable WebView2 browser accelerator keys (Ctrl+P / Ctrl+S /
+            // Ctrl+R / F5 / F12 / Ctrl+Shift+I) at the OS level — belt and
+            // braces with the JS keydown blocker.
+            .with_browser_accelerator_keys(false)
+            .with_background_color((10, 10, 11, 255))
+            .build(&wrapper);
+
+        match built {
+            Ok(wv) => {
+                elog!(
+                    "[HardwaveWettBoi] WebView created successfully in {:?}",
+                    dir
+                );
+                webview = Some(wv);
+                web_context = Some(context_attempt);
+                break;
+            }
+            Err(e) => {
+                elog!(
+                    "[HardwaveWettBoi] WebView creation FAILED in {:?}: {}",
+                    dir,
+                    e
+                );
+            }
         }
-        Err(e) => {
-            elog!("[HardwaveWettBoi] WebView creation FAILED: {}", e);
-            None
-        }
-    };
+    }
+
+    if webview.is_none() {
+        elog!(
+            "[HardwaveWettBoi] no WebView2 environment could be created; the window will be empty"
+        );
+    }
 
     Box::new(EditorHandle {
         running: running_clone,
         _webview: webview,
-        _web_context: Some(web_context),
+        _web_context: web_context,
         _server_thread: Some(server_thread),
         _editor_thread: None,
     })

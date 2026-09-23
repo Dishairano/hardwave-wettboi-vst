@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.5
+
+The window opens when the DAW loads WettBoi twice.
+
+- **An empty window in MPC when the same plug-in is open twice.** WettBoi's
+  interface runs in a WebView, and a WebView keeps its sign-in in a folder it
+  holds open for as long as it lives. A second copy of the plug-in in the same
+  program could not open that folder, the WebView was never created, and the
+  window stayed empty with nothing on screen to say why. The second copy now
+  takes a folder of its own, and the editor log records which folder each one
+  used.
+
 ## 0.4.4
 
 Saved settings come back the way you left them, a damaged project cannot take the
