@@ -37,6 +37,7 @@ pub fn install(plugin_slug: &'static str) {
         return;
     }
     INIT.call_once(|| {
+        let internal = internal_machine();
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             // Always let the previous hook run first — the existing
@@ -59,7 +60,7 @@ pub fn install(plugin_slug: &'static str) {
 
             // Best-effort send — never re-panic out of a panic hook.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                send_crash(plugin_slug, &payload, &location, &stack);
+                send_crash(plugin_slug, &payload, &location, &stack, internal);
             }));
         }));
     });
@@ -85,7 +86,17 @@ fn is_our_own_build() -> bool {
     }
 }
 
-fn send_crash(plugin_slug: &str, message: &str, top_frame: &str, stack: &str) {
+/// Set on Hardwave's own machines (the founder's PC, test runners) so the dashboard can leave
+/// their crash reports out of the producer counts. Any value counts, even an empty one.
+const INTERNAL_MARKER: &str = "HARDWAVE_INTERNAL";
+
+/// Whether [`INTERNAL_MARKER`] is set. Read once at start-up. Only its presence is looked at,
+/// never its value, and nothing else about the machine or the person is read.
+fn internal_machine() -> bool {
+    std::env::var_os(INTERNAL_MARKER).is_some()
+}
+
+fn send_crash(plugin_slug: &str, message: &str, top_frame: &str, stack: &str, internal: bool) {
     if is_our_own_build() {
         eprintln!("[{plugin_slug}] panic in our own build, not reported: {message}");
         return;
@@ -93,15 +104,16 @@ fn send_crash(plugin_slug: &str, message: &str, top_frame: &str, stack: &str) {
     let machine_id = load_or_create_machine_id();
     let stack_hash = compute_stack_hash(plugin_slug, top_frame);
 
-    let body = serde_json::json!({
-        "machine_id":  machine_id,
-        "plugin_slug": plugin_slug,
-        "version":     env!("CARGO_PKG_VERSION"),
-        "os":          os_label(),
-        "top_frame":   top_frame,
-        "message":     message,
-        "stack_hash":  stack_hash,
-        "stack":       truncate(stack, 8 * 1024),
+    let body = crash_body(&CrashReport {
+        machine_id: &machine_id,
+        plugin_slug,
+        version: env!("CARGO_PKG_VERSION"),
+        os: os_label(),
+        top_frame,
+        message,
+        stack_hash: &stack_hash,
+        stack: &truncate(stack, 8 * 1024),
+        internal,
     });
 
     // 3-second timeout — the process may be tearing down behind us. ureq is
@@ -109,7 +121,40 @@ fn send_crash(plugin_slug: &str, message: &str, top_frame: &str, stack: &str) {
     let _ = ureq::post(ENDPOINT)
         .set("Content-Type", "application/json")
         .timeout(Duration::from_secs(3))
-        .send_string(&body.to_string());
+        .send_string(&body);
+}
+
+/// Everything a crash report carries, already resolved, so the JSON it becomes can be tested
+/// without a panic, a machine id file or a network.
+struct CrashReport<'a> {
+    machine_id: &'a str,
+    plugin_slug: &'a str,
+    version: &'a str,
+    os: &'a str,
+    top_frame: &'a str,
+    message: &'a str,
+    stack_hash: &'a str,
+    stack: &'a str,
+    internal: bool,
+}
+
+/// The exact body posted to the crash endpoint. `"internal": true` is added only on a machine
+/// with [`INTERNAL_MARKER`] set; everywhere else the body is what 0.4.5 sent.
+fn crash_body(r: &CrashReport) -> String {
+    let mut body = serde_json::json!({
+        "machine_id":  r.machine_id,
+        "plugin_slug": r.plugin_slug,
+        "version":     r.version,
+        "os":          r.os,
+        "top_frame":   r.top_frame,
+        "message":     r.message,
+        "stack_hash":  r.stack_hash,
+        "stack":       r.stack,
+    });
+    if r.internal {
+        body["internal"] = serde_json::Value::Bool(true);
+    }
+    body.to_string()
 }
 
 /// Resolve a stable per-machine identifier matching the SHA-256 hex shape
@@ -249,5 +294,61 @@ mod tests {
             is_our_own_build(),
             "the test harness must count as our own build"
         );
+    }
+
+    fn sample_report() -> CrashReport<'static> {
+        CrashReport {
+            machine_id: "ab",
+            plugin_slug: "wettboi",
+            version: "9.9.9",
+            os: "win-x64",
+            top_frame: "src/lib.rs:1:2",
+            message: "boom \"quoted\"",
+            stack_hash: "0123456789abcdef",
+            stack: "frame 0\nframe 1",
+            internal: false,
+        }
+    }
+
+    /// The crash body as WettBoi 0.4.5 sends it, byte for byte. The dashboard parses this, so a
+    /// change to a key, the key order or the escaping must be a decision, not an accident.
+    const BODY_0_4_5: &str = concat!(
+        r#"{"machine_id":"ab","message":"boom \"quoted\"","os":"win-x64","#,
+        r#""plugin_slug":"wettboi","stack":"frame 0\nframe 1","#,
+        r#""stack_hash":"0123456789abcdef","top_frame":"src/lib.rs:1:2","version":"9.9.9"}"#
+    );
+
+    /// Marker unset: exactly what 0.4.5 sent, no new field and no changed value.
+    #[test]
+    fn crash_body_is_unchanged() {
+        assert_eq!(crash_body(&sample_report()), BODY_0_4_5);
+    }
+
+    /// Marker set: the same body plus one field, `"internal": true`, and nothing else.
+    #[test]
+    fn internal_machine_adds_only_the_internal_field() {
+        let report = CrashReport {
+            internal: true,
+            ..sample_report()
+        };
+        let with: serde_json::Value = serde_json::from_str(&crash_body(&report)).unwrap();
+        let mut without: serde_json::Value = serde_json::from_str(BODY_0_4_5).unwrap();
+        without["internal"] = serde_json::Value::Bool(true);
+        assert_eq!(with, without);
+        assert_eq!(
+            crash_body(&report),
+            concat!(
+                r#"{"internal":true,"machine_id":"ab","message":"boom \"quoted\"","os":"win-x64","#,
+                r#""plugin_slug":"wettboi","stack":"frame 0\nframe 1","#,
+                r#""stack_hash":"0123456789abcdef","top_frame":"src/lib.rs:1:2","version":"9.9.9"}"#
+            )
+        );
+    }
+
+    /// The name is what the founder's PC and the test runners set; renaming it silently stops
+    /// their reports being marked.
+    #[test]
+    fn the_marker_is_hardwave_internal() {
+        assert_eq!(INTERNAL_MARKER, "HARDWAVE_INTERNAL");
     }
 }
