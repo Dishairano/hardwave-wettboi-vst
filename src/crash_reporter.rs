@@ -93,15 +93,15 @@ fn send_crash(plugin_slug: &str, message: &str, top_frame: &str, stack: &str) {
     let machine_id = load_or_create_machine_id();
     let stack_hash = compute_stack_hash(plugin_slug, top_frame);
 
-    let body = serde_json::json!({
-        "machine_id":  machine_id,
-        "plugin_slug": plugin_slug,
-        "version":     env!("CARGO_PKG_VERSION"),
-        "os":          os_label(),
-        "top_frame":   top_frame,
-        "message":     message,
-        "stack_hash":  stack_hash,
-        "stack":       truncate(stack, 8 * 1024),
+    let body = crash_body(&CrashReport {
+        machine_id: &machine_id,
+        plugin_slug,
+        version: env!("CARGO_PKG_VERSION"),
+        os: os_label(),
+        top_frame,
+        message,
+        stack_hash: &stack_hash,
+        stack: &truncate(stack, 8 * 1024),
     });
 
     // 3-second timeout — the process may be tearing down behind us. ureq is
@@ -109,7 +109,35 @@ fn send_crash(plugin_slug: &str, message: &str, top_frame: &str, stack: &str) {
     let _ = ureq::post(ENDPOINT)
         .set("Content-Type", "application/json")
         .timeout(Duration::from_secs(3))
-        .send_string(&body.to_string());
+        .send_string(&body);
+}
+
+/// Everything a crash report carries, already resolved, so the JSON it becomes can be tested
+/// without a panic, a machine id file or a network.
+struct CrashReport<'a> {
+    machine_id: &'a str,
+    plugin_slug: &'a str,
+    version: &'a str,
+    os: &'a str,
+    top_frame: &'a str,
+    message: &'a str,
+    stack_hash: &'a str,
+    stack: &'a str,
+}
+
+/// The exact body posted to the crash endpoint.
+fn crash_body(r: &CrashReport) -> String {
+    serde_json::json!({
+        "machine_id":  r.machine_id,
+        "plugin_slug": r.plugin_slug,
+        "version":     r.version,
+        "os":          r.os,
+        "top_frame":   r.top_frame,
+        "message":     r.message,
+        "stack_hash":  r.stack_hash,
+        "stack":       r.stack,
+    })
+    .to_string()
 }
 
 /// Resolve a stable per-machine identifier matching the SHA-256 hex shape
@@ -249,5 +277,31 @@ mod tests {
             is_our_own_build(),
             "the test harness must count as our own build"
         );
+    }
+
+    fn sample_report() -> CrashReport<'static> {
+        CrashReport {
+            machine_id: "ab",
+            plugin_slug: "wettboi",
+            version: "9.9.9",
+            os: "win-x64",
+            top_frame: "src/lib.rs:1:2",
+            message: "boom \"quoted\"",
+            stack_hash: "0123456789abcdef",
+            stack: "frame 0\nframe 1",
+        }
+    }
+
+    /// The crash body as WettBoi 0.4.5 sends it, byte for byte. The dashboard parses this, so a
+    /// change to a key, the key order or the escaping must be a decision, not an accident.
+    const BODY_0_4_5: &str = concat!(
+        r#"{"machine_id":"ab","message":"boom \"quoted\"","os":"win-x64","#,
+        r#""plugin_slug":"wettboi","stack":"frame 0\nframe 1","#,
+        r#""stack_hash":"0123456789abcdef","top_frame":"src/lib.rs:1:2","version":"9.9.9"}"#
+    );
+
+    #[test]
+    fn crash_body_is_unchanged() {
+        assert_eq!(crash_body(&sample_report()), BODY_0_4_5);
     }
 }
