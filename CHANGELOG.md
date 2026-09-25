@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.6-rc1
+
+- Never panic when stderr is a closed pipe (tickets #18, #19)
+- Mark crash reports from our own machines (HARDWAVE_INTERNAL)
+
 ## 0.4.5
 
 The window opens when the DAW loads WettBoi twice.
