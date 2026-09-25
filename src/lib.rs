@@ -418,9 +418,9 @@ impl Plugin for HardwaveWettBoi {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        eprintln!("[HardwaveWettBoi] editor() called — creating WettBoiEditor");
+        stderr_line!("[HardwaveWettBoi] editor() called — creating WettBoiEditor");
         let token = auth::load_token();
-        eprintln!(
+        stderr_line!(
             "[HardwaveWettBoi] auth token: {}",
             if token.is_some() { "present" } else { "none" }
         );
@@ -438,8 +438,8 @@ impl Plugin for HardwaveWettBoi {
         _context: &mut impl InitContext<Self>,
     ) -> bool {
         let sr = buffer_config.sample_rate;
-        eprintln!(
-            "[HardwaveWettBoi] initialize — sample_rate={}, buffer_size={}, version={}",
+        stderr_line!(
+            "[HardwaveWettBoi] initialize —sample_rate={}, buffer_size={}, version={}",
             sr,
             buffer_config.max_buffer_size,
             env!("CARGO_PKG_VERSION")
