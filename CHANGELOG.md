@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.6-rc1
+
+The window stops asking for news sixty times a second, and on Windows it gets its
+answers.
+
+- **The interface talks to the plug-in only when something changed.** The window
+  asked the plug-in for its state every 16 ms, whether or not anything had moved,
+  and sent the next question before the last one was answered. A tester watching
+  the network log saw a steady flood of requests with the interface standing
+  still. Now the plug-in holds each question until the state changes, or answers
+  "no change" after five seconds, and the window asks again only once it has its
+  answer. With nothing moving, that is one request every five seconds.
+- **No more `ERR_CONNECTION_ABORTED` on Windows.** The plug-in's small local
+  server sometimes answered before the window's request had fully arrived, then
+  closed the connection with the request still unread, and Windows reset it. The
+  window lost those answers, and in MPC the controls could stay without their
+  values. The server now reads the whole request and closes the connection
+  cleanly.
+
 ## 0.4.5
 
 The window opens when the DAW loads WettBoi twice.

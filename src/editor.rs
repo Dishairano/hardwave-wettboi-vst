@@ -888,6 +888,96 @@ The audio side of the plug-in is unaffected: your project still plays.</p>
     )
 }
 
+/// How long the packet server holds a poll when nothing has changed before answering "no change".
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const POLL_HOLD: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A poll from the page, read in full and waiting for its answer.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+struct HeldPoll {
+    stream: std::net::TcpStream,
+    /// The last packet number the page has seen.
+    since: u64,
+    at: std::time::Instant,
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const CORS: &str = "Access-Control-Allow-Origin: *\r\n\
+                    Access-Control-Allow-Private-Network: true\r\n\
+                    Access-Control-Allow-Methods: GET, OPTIONS\r\n\
+                    Access-Control-Expose-Headers: X-Packet-Seq\r\n\
+                    Cache-Control: no-store\r\n\
+                    Connection: close\r\n";
+
+/// Read one poll from the page in full. A preflight is answered here and gives `None`.
+///
+/// On Windows an accepted socket inherits the listener's non-blocking mode. The old server read
+/// once without waiting, so the request had often not arrived yet; it answered anyway and closed
+/// the socket with the request still unread, and Windows answers that with a reset. The page saw
+/// `net::ERR_CONNECTION_ABORTED` on its polls and never got the plug-in's state (a tester in MPC
+/// found it in the network log, 2026-09-26). This waits for the whole request first.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn read_poll(mut stream: std::net::TcpStream) -> Option<HeldPoll> {
+    use std::io::Read;
+    let wait = Some(std::time::Duration::from_millis(250));
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(wait);
+    let _ = stream.set_write_timeout(wait);
+
+    let mut request = Vec::with_capacity(1024);
+    let mut buf = [0u8; 1024];
+    while !request.windows(4).any(|w| w == b"\r\n\r\n") && request.len() < 16 * 1024 {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => request.extend_from_slice(&buf[..n]),
+        }
+    }
+    let line = String::from_utf8_lossy(&request[..request.len().min(256)]).into_owned();
+
+    // The browser asking whether a public page may talk to this machine: same permissions, no body.
+    if line.starts_with("OPTIONS") {
+        let head = format!("HTTP/1.1 204 No Content\r\n{CORS}Content-Length: 0\r\n\r\n");
+        finish(&mut stream, head.as_bytes());
+        return None;
+    }
+    // "GET /?since=12 HTTP/1.1". A page that says nothing has seen nothing, and gets the packet now.
+    let since = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|path| path.split("since=").nth(1))
+        .and_then(|v| v.split('&').next())
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(u64::MAX);
+    Some(HeldPoll {
+        stream,
+        since,
+        at: std::time::Instant::now(),
+    })
+}
+
+/// Answer a held poll: the packet and its number, or "no change" (204) when the hold ran out.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn answer(stream: &mut std::net::TcpStream, packet: Option<(&str, u64)>) {
+    let response = match packet {
+        Some((body, seq)) => format!(
+            "HTTP/1.1 200 OK\r\n{CORS}X-Packet-Seq: {seq}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        ),
+        None => format!("HTTP/1.1 204 No Content\r\n{CORS}Content-Length: 0\r\n\r\n"),
+    };
+    finish(stream, response.as_bytes());
+}
+
+/// Write the answer and close our side cleanly, so the page never sees a reset.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn finish(stream: &mut std::net::TcpStream, bytes: &[u8]) {
+    use std::io::Write;
+    let _ = stream.write_all(bytes);
+    let _ = stream.flush();
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+}
+
 #[cfg(target_os = "windows")]
 fn spawn_windows(
     raw_handle: usize,
@@ -902,7 +992,6 @@ fn spawn_windows(
     editor_size: Arc<Mutex<(u32, u32)>>,
     resize_tx: Arc<Mutex<Option<Sender<(u32, u32)>>>>,
 ) -> Box<dyn std::any::Any + Send> {
-    use std::io::{Read as IoRead, Write as IoWrite};
     use std::net::TcpListener;
 
     let running = Arc::new(AtomicBool::new(true));
@@ -929,18 +1018,10 @@ fn spawn_windows(
 
     let server_thread = std::thread::spawn(move || {
         listener.set_nonblocking(true).ok();
+        let mut held: Vec<HeldPoll> = Vec::new();
+        let mut last_json = String::new();
+        let mut seq: u64 = 0;
         while running_server.load(Ordering::Relaxed) {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 1024];
-                let _ = stream.read(&mut buf);
-                let body = latest_json_server.lock().clone();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = stream.write_all(response.as_bytes());
-            }
             if let Some(rx) = packet_rx.try_lock() {
                 while let Ok(pkt) = rx.try_recv() {
                     if let Ok(json) = serde_json::to_string(&pkt) {
@@ -948,6 +1029,30 @@ fn spawn_windows(
                     }
                 }
             }
+            let latest = latest_json_server.lock().clone();
+            if latest != last_json {
+                last_json = latest;
+                seq += 1;
+            }
+            while let Ok((stream, _)) = listener.accept() {
+                if let Some(poll) = read_poll(stream) {
+                    held.push(poll);
+                }
+            }
+            // A poll that has already seen this packet waits for the next one, so an interface
+            // with nothing moving asks once every few seconds instead of sixty times a second.
+            let now = std::time::Instant::now();
+            held.retain_mut(|poll| {
+                if poll.since != seq {
+                    answer(&mut poll.stream, Some((&last_json, seq)));
+                    false
+                } else if now.duration_since(poll.at) >= POLL_HOLD {
+                    answer(&mut poll.stream, None);
+                    false
+                } else {
+                    true
+                }
+            });
             while resize_rx.try_recv().is_ok() {}
             std::thread::sleep(std::time::Duration::from_millis(8));
         }
@@ -957,14 +1062,23 @@ fn spawn_windows(
         r#"
 (function() {{
     var _port = {port};
+    var _seq = -1;
     function poll() {{
-        fetch('http://127.0.0.1:' + _port)
-            .then(function(r) {{ return r.json(); }})
-            .then(function(data) {{
-                if (window.__onWbPacket) window.__onWbPacket(data);
+        // The plug-in holds this request until its state changes (or a few seconds pass), and
+        // the next one is only sent once this one is answered: nothing moving, almost no traffic.
+        var wait = 16;
+        fetch('http://127.0.0.1:' + _port + '/?since=' + _seq, {{ cache: 'no-store' }})
+            .then(function(r) {{
+                if (r.status !== 200) return null;
+                var s = r.headers.get('X-Packet-Seq');
+                if (s !== null) _seq = +s;
+                return r.json();
             }})
-            .catch(function() {{}});
-        setTimeout(poll, 16);
+            .then(function(data) {{
+                if (data && window.__onWbPacket) window.__onWbPacket(data);
+            }})
+            .catch(function() {{ wait = 500; }})
+            .then(function() {{ setTimeout(poll, wait); }});
     }}
     poll();
 }})();
@@ -1357,6 +1471,99 @@ mod pin_tests {
             pin_own_module(),
             "asking twice must stay true, it is a one-time pin"
         );
+    }
+}
+
+#[cfg(test)]
+mod packet_server_tests {
+    use super::{answer, read_poll};
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    /// Accept one connection the way the editor does, with a non-blocking listener.
+    fn accept_one(listener: TcpListener) -> std::thread::JoinHandle<Option<super::HeldPoll>> {
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let Ok((stream, _)) = listener.accept() {
+                    return read_poll(stream);
+                }
+                assert!(std::time::Instant::now() < deadline, "no connection");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        })
+    }
+
+    fn listener() -> (TcpListener, u16) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.set_nonblocking(true).unwrap();
+        let port = l.local_addr().unwrap().port();
+        (l, port)
+    }
+
+    /// The request arrives after the connection: it is still read whole, and the answer comes whole.
+    #[test]
+    fn a_late_request_still_gets_the_whole_answer() {
+        let (l, port) = listener();
+        let server = accept_one(l);
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        client
+            .write_all(b"GET /?since=4 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .unwrap();
+        let mut poll = server.join().unwrap().expect("a poll");
+        assert_eq!(poll.since, 4);
+        answer(&mut poll.stream, Some((r#"{"bpm":140}"#, 5)));
+        drop(poll);
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        assert!(reply.starts_with("HTTP/1.1 200 OK"), "{reply}");
+        assert!(reply.contains("X-Packet-Seq: 5"), "{reply}");
+        assert!(reply.contains("Connection: close"), "{reply}");
+        assert!(reply.ends_with(r#"{"bpm":140}"#), "{reply}");
+    }
+
+    /// A page that has not said what it saw is treated as having seen nothing.
+    #[test]
+    fn a_first_poll_is_answered_at_once() {
+        let (l, port) = listener();
+        let server = accept_one(l);
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        let poll = server.join().unwrap().expect("a poll");
+        assert_eq!(poll.since, u64::MAX);
+    }
+
+    #[test]
+    fn no_change_is_a_204_without_a_body() {
+        let (l, port) = listener();
+        let server = accept_one(l);
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client.write_all(b"GET /?since=7 HTTP/1.1\r\n\r\n").unwrap();
+        let mut poll = server.join().unwrap().expect("a poll");
+        answer(&mut poll.stream, None);
+        drop(poll);
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
+        assert!(reply.ends_with("\r\n\r\n"), "{reply}");
+    }
+
+    #[test]
+    fn a_preflight_is_answered_and_not_held() {
+        let (l, port) = listener();
+        let server = accept_one(l);
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client
+            .write_all(
+                b"OPTIONS / HTTP/1.1\r\nAccess-Control-Request-Private-Network: true\r\n\r\n",
+            )
+            .unwrap();
+        assert!(server.join().unwrap().is_none());
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
+        assert!(reply.contains("Access-Control-Allow-Private-Network: true"));
     }
 }
 
