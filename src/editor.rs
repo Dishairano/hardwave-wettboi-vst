@@ -1177,6 +1177,10 @@ fn spawn_windows(
             "[HardwaveWettBoi] no WebView2 environment could be created; the window will be empty"
         );
     }
+    let webview = webview.map(std::rc::Rc::new);
+    if let Some(wv) = &webview {
+        keeper::watch(raw_handle, wv);
+    }
 
     Box::new(EditorHandle {
         running: running_clone,
@@ -1185,6 +1189,159 @@ fn spawn_windows(
         _server_thread: Some(server_thread),
         _editor_thread: None,
     })
+}
+
+/// Keeps the WebView2 page filling the host's editor window, and visible while that window is.
+///
+/// wry sizes the page to the parent window once, when it is created, and afterwards only follows
+/// the parent's `WM_SIZE`. A tester in MPC on Windows (2026-09-26) found the page loaded and
+/// rendering, but the WebView2 surface (`Chrome_WidgetWin_0`) was created without `WS_VISIBLE` and
+/// at 2580x1023 inside a 1282x767 editor window, so nothing ever appeared. A host that builds or
+/// sizes its window after attaching the editor can leave the page like that, and nothing put it
+/// right. This checks four times a second, on the host's UI thread, and corrects both, writing each
+/// correction to the editor log.
+#[cfg(target_os = "windows")]
+mod keeper {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::{Rc, Weak};
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumChildWindows, GetClassNameW, GetClientRect, IsWindow, IsWindowVisible, KillTimer,
+        SetTimer,
+    };
+
+    /// Timer id on the host's window; unlikely to meet one of the host's own.
+    const TIMER_ID: usize = 0x4857_5742;
+    const EVERY_MS: u32 = 250;
+    /// A surface that will not show is re-shown at most this often, and logged at most this many times.
+    const RESHOW_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+    const MAX_LOGGED: u32 = 20;
+
+    struct Watched {
+        webview: Weak<wry::WebView>,
+        last_reshow: Option<std::time::Instant>,
+        logged: u32,
+    }
+
+    thread_local! {
+        static WATCHED: RefCell<HashMap<HWND, Watched>> = RefCell::new(HashMap::new());
+    }
+
+    /// Start watching `webview` inside the host window `parent`. Call on the host's UI thread.
+    pub fn watch(parent: usize, webview: &Rc<wry::WebView>) {
+        let parent = parent as HWND;
+        WATCHED.with(|w| {
+            w.borrow_mut().insert(
+                parent,
+                Watched {
+                    webview: Rc::downgrade(webview),
+                    last_reshow: None,
+                    logged: 0,
+                },
+            )
+        });
+        // A timer on the host's own window: it goes when that window goes.
+        let id = unsafe { SetTimer(parent, TIMER_ID, EVERY_MS, Some(tick)) };
+        elog!(
+            "[HardwaveWettBoi] window keeper {}",
+            if id == 0 {
+                "could not start"
+            } else {
+                "started"
+            }
+        );
+        unsafe { tick(parent, 0, TIMER_ID, 0) };
+    }
+
+    unsafe extern "system" fn tick(parent: HWND, _msg: u32, _id: usize, _time: u32) {
+        let alive = IsWindow(parent) != 0;
+        let webview = WATCHED.with(|w| w.borrow().get(&parent).and_then(|x| x.webview.upgrade()));
+        let Some(webview) = webview.filter(|_| alive) else {
+            // The editor closed: stop.
+            if alive {
+                KillTimer(parent, TIMER_ID);
+            }
+            WATCHED.with(|w| w.borrow_mut().remove(&parent));
+            return;
+        };
+
+        let mut rect: RECT = std::mem::zeroed();
+        if GetClientRect(parent, &mut rect) == 0 {
+            return;
+        }
+        let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+        let mut notes = Vec::new();
+
+        if w > 0 && h > 0 {
+            let now = webview
+                .bounds()
+                .ok()
+                .map(|b| b.size.to_physical::<i32>(1.0));
+            if now.map(|s| (s.width, s.height)) != Some((w, h)) {
+                let _ = webview.set_bounds(wry::Rect {
+                    position: wry::dpi::Position::Physical(wry::dpi::PhysicalPosition::new(0, 0)),
+                    size: wry::dpi::Size::Physical(wry::dpi::PhysicalSize::new(w as u32, h as u32)),
+                });
+                notes.push(match now {
+                    Some(s) => format!(
+                        "resized the page from {}x{} to the window's {}x{}",
+                        s.width, s.height, w, h
+                    ),
+                    None => format!("sized the page to the window's {}x{}", w, h),
+                });
+            }
+        }
+
+        if IsWindowVisible(parent) != 0 && surface_hidden(parent) {
+            let due = WATCHED.with(|x| {
+                x.borrow()
+                    .get(&parent)
+                    .and_then(|x| x.last_reshow)
+                    .is_none_or(|t| t.elapsed() >= RESHOW_EVERY)
+            });
+            if due {
+                let _ = webview.set_visible(false);
+                let _ = webview.set_visible(true);
+                WATCHED.with(|x| {
+                    if let Some(x) = x.borrow_mut().get_mut(&parent) {
+                        x.last_reshow = Some(std::time::Instant::now());
+                    }
+                });
+                notes.push(
+                    "the window was visible but the page surface was not: showed it".to_string(),
+                );
+            }
+        }
+
+        for note in notes {
+            let log = WATCHED.with(|x| {
+                x.borrow_mut().get_mut(&parent).is_some_and(|x| {
+                    x.logged += 1;
+                    x.logged <= MAX_LOGGED
+                })
+            });
+            if log {
+                elog!("[HardwaveWettBoi] window keeper: {}", note);
+            }
+        }
+    }
+
+    /// Is there a WebView2 surface under `parent` that is not visible? No surface yet: not hidden.
+    unsafe fn surface_hidden(parent: HWND) -> bool {
+        unsafe extern "system" fn each(child: HWND, found: LPARAM) -> BOOL {
+            let mut name = [0u16; 64];
+            let n = GetClassNameW(child, name.as_mut_ptr(), name.len() as i32);
+            if n > 0 && String::from_utf16_lossy(&name[..n as usize]) == "Chrome_WidgetWin_0" {
+                *(found as *mut HWND) = child;
+                return 0;
+            }
+            1
+        }
+        let mut surface: HWND = 0;
+        EnumChildWindows(parent, Some(each), &mut surface as *mut HWND as LPARAM);
+        surface != 0 && IsWindowVisible(surface) == 0
+    }
 }
 
 // ─── Linux / macOS: evaluate_script approach ───────────────────────────────
@@ -1438,7 +1595,8 @@ fn spawn_macos(
 
 struct EditorHandle {
     running: Arc<AtomicBool>,
-    _webview: Option<wry::WebView>,
+    // Shared so the Windows keeper can reach it on the UI thread; it holds only a weak reference.
+    _webview: Option<std::rc::Rc<wry::WebView>>,
     _web_context: Option<wry::WebContext>,
     _server_thread: Option<std::thread::JoinHandle<()>>,
     _editor_thread: Option<std::thread::JoinHandle<()>>,

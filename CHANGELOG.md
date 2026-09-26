@@ -2,9 +2,15 @@
 
 ## 0.4.6-rc1
 
-The window stops asking for news sixty times a second, and on Windows it gets its
-answers.
+The interface shows up in MPC on Windows, stops asking for news sixty times a
+second, and gets its answers.
 
+- **The interface appears in MPC on Windows.** The page loaded and drew, but the
+  surface it draws on was left hidden and sized for a much larger window, so the
+  editor stayed empty. A tester traced it window by window. WettBoi now keeps
+  the page filling the editor window and shows it again whenever the window is
+  visible and the page is not, whatever order the host builds its window in.
+  Each correction is written to the editor log.
 - **The interface talks to the plug-in only when something changed.** The window
   asked the plug-in for its state every 16 ms, whether or not anything had moved,
   and sent the next question before the last one was answered. A tester watching
