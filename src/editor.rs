@@ -732,7 +732,10 @@ trait WithUrlOrOffline {
 impl WithUrlOrOffline for wry::WebViewBuilder<'_> {
     fn with_url_or_offline(self, url: &str) -> Self {
         if interface_reachable(url) {
-            elog!("[HardwaveWettBoi] loading the interface: {}", without_query(url));
+            elog!(
+                "[HardwaveWettBoi] loading the interface: {}",
+                without_query(url)
+            );
             self.with_url(url)
         } else {
             elog!("[HardwaveWettBoi] loading the offline page");
@@ -758,7 +761,10 @@ fn log_page_load(event: wry::PageLoadEvent, url: String) {
 /// `url` as it may go into the log. A `data:` URL carries the whole page, and the offline page
 /// holds the interface URL with its token, so only the scheme is kept.
 fn loggable_url(url: &str) -> &str {
-    if url.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("data:")) {
+    if url
+        .get(..5)
+        .is_some_and(|s| s.eq_ignore_ascii_case("data:"))
+    {
         "data:"
     } else {
         without_query(url)
