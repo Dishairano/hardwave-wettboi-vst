@@ -732,10 +732,42 @@ trait WithUrlOrOffline {
 impl WithUrlOrOffline for wry::WebViewBuilder<'_> {
     fn with_url_or_offline(self, url: &str) -> Self {
         if interface_reachable(url) {
+            elog!(
+                "[HardwaveWettBoi] loading the interface: {}",
+                without_query(url)
+            );
             self.with_url(url)
         } else {
+            elog!("[HardwaveWettBoi] loading the offline page");
             self.with_html(offline_page(url))
         }
+    }
+}
+
+/// Writes to the editor log when a page starts and when it finishes loading, so the log says
+/// whether the page the WebView was given ever loaded. The URL is logged without its query string,
+/// which holds the licence token.
+fn log_page_load(event: wry::PageLoadEvent, url: String) {
+    elog!(
+        "[HardwaveWettBoi] page load {}: {}",
+        match event {
+            wry::PageLoadEvent::Started => "started",
+            wry::PageLoadEvent::Finished => "finished",
+        },
+        loggable_url(&url)
+    );
+}
+
+/// `url` as it may go into the log. A `data:` URL carries the whole page, and the offline page
+/// holds the interface URL with its token, so only the scheme is kept.
+fn loggable_url(url: &str) -> &str {
+    if url
+        .get(..5)
+        .is_some_and(|s| s.eq_ignore_ascii_case("data:"))
+    {
+        "data:"
+    } else {
+        without_query(url)
     }
 }
 
@@ -1136,6 +1168,7 @@ fn spawn_windows(
             .with_ipc_handler(move |msg| {
                 handle_ipc(&ctx, &pmap, &msg.body(), raw_handle, &esize, &rtx);
             })
+            .with_on_page_load_handler(log_page_load)
             .with_bounds(wry::Rect {
                 position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
                 size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(
@@ -1393,6 +1426,7 @@ fn spawn_unix(
             .with_ipc_handler(move |msg| {
                 handle_ipc(&ctx, &pmap, msg.body(), raw_handle, &esize, &rtx);
             })
+            .with_on_page_load_handler(log_page_load)
             .with_bounds(wry::Rect {
                 position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
                 size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(
@@ -1501,6 +1535,7 @@ fn spawn_macos(
         .with_ipc_handler(move |msg| {
             handle_ipc(&ctx, &pmap, &msg.body(), raw_handle, &esize, &rtx);
         })
+        .with_on_page_load_handler(log_page_load)
         .with_bounds(wry::Rect {
             position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
             size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(width as f64, height as f64)),
@@ -1728,6 +1763,21 @@ mod packet_server_tests {
 #[cfg(test)]
 mod offline_tests {
     use super::*;
+
+    #[test]
+    fn a_page_load_is_logged_without_the_token() {
+        assert_eq!(
+            loggable_url("https://example.com/vst/thing?token=abc&v=1"),
+            "https://example.com/vst/thing"
+        );
+        assert_eq!(loggable_url("about:blank"), "about:blank");
+        assert_eq!(
+            loggable_url("data:text/html,%3Ca href=%22https://example.com/vst%3Ftoken=abc%22%3E"),
+            "data:"
+        );
+        assert_eq!(loggable_url("DATA:text/html,token=abc"), "data:");
+        assert_eq!(loggable_url(""), "");
+    }
 
     #[test]
     fn only_a_definite_failure_takes_the_interface_away() {
