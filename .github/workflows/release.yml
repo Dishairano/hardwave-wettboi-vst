@@ -197,7 +197,7 @@ jobs:
           # Clean tags publish as stable Latest; -rc/-beta stay pre-release.
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           make_latest: ${{ !contains(steps.version.outputs.version, '-') }}
-          generate_release_notes: true
+          generate_release_notes: false
           files: |
             artifacts/hardwave-wettboi-linux-x64/*.zip
             artifacts/hardwave-wettboi-windows-x64/*.zip
@@ -205,31 +205,9 @@ jobs:
           body: |
             ## Hardwave WettBoi ${{ steps.version.outputs.version }}
 
-            Sidechain reverb & delay VST3/CLAP plugin — powered by Hardwave Studios.
+            Install and update Hardwave WettBoi through the Hardwave Suite: https://hardwavestudios.com/downloads
 
-            ### Downloads
-
-            | Platform | File |
-            |----------|------|
-            | Windows x64 | `hardwave-wettboi-windows-x64.zip` |
-            | Linux x64 | `hardwave-wettboi-linux-x64.zip` |
-            | macOS Universal (Intel + Apple Silicon) | `hardwave-wettboi-macos-universal.zip` |
-
-            ### Installation
-
-            **Windows:**
-            1. Extract the zip
-            2. Copy `hardwave-wettboi.vst3` folder to `C:\Program Files\Common Files\VST3\`
-            3. Copy `hardwave-wettboi.clap` to `C:\Program Files\Common Files\CLAP\`
-
-            **macOS:**
-            1. Extract: `unzip hardwave-wettboi-macos-universal.zip`
-            2. Copy `hardwave-wettboi.vst3` to `~/Library/Audio/Plug-Ins/VST3/`
-            3. Copy `hardwave-wettboi.clap` to `~/Library/Audio/Plug-Ins/CLAP/`
-
-            **Linux:**
-            1. Extract: `unzip hardwave-wettboi-linux-x64.zip`
-            2. Copy to `~/.vst3/` and `~/.clap/`
+            The files below are the builds the Suite installs. What changed is in CHANGELOG.md.
 
       - name: Update product database
         if: ${{ !contains(steps.version.outputs.version, '-') }}
