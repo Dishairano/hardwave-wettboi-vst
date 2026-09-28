@@ -1,12 +1,8 @@
 # Changelog
 
-
-- **The log we ask for when a window stays blank now says what happened.** It records whether the interface loaded, and what went wrong if it did not, so a report can be answered instead of guessed at.
-
 ## 0.4.7-rc1
 
-- Release page: point to the Hardwave Suite instead of manual install steps
-- Repo: hardwave-wettboi-vst. The editor log... (#12)
+- **The log we ask for when a window stays blank now says what happened.** It records whether the interface loaded, and what went wrong if it did not, so a report can be answered instead of guessed at.
 
 ## 0.4.6-rc1
 
