@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.7-rc1
+
+- Release page: point to the Hardwave Suite instead of manual install steps
+- Repo: hardwave-wettboi-vst. The editor log... (#12)
+
 ## 0.4.6-rc1
 
 The interface shows up in MPC on Windows, stops asking for news sixty times a
