@@ -536,10 +536,14 @@ impl Editor for WettBoiEditor {
         );
 
         let version = env!("CARGO_PKG_VERSION");
-        let url = match &self.auth_token {
-            Some(t) => format!("{}?token={}&v={}", WETTBOI_URL, t, version),
-            None => format!("{}?v={}", WETTBOI_URL, version),
-        };
+        // The query carries the token, the version, and, inside our
+        // own DAW, which host this is: the plug-ins are free there
+        // and paid everywhere else.
+        let url = format!(
+            "{}{}",
+            WETTBOI_URL,
+            crate::auth::url_query(self.auth_token.as_deref(), version)
+        );
         elog!(
             "[HardwaveWettBoi] Loading URL: {} (token {})",
             WETTBOI_URL,
