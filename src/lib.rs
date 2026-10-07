@@ -7,6 +7,13 @@
 //!   Dly→Rev: Input → Delay → Reverb → Sidechain → Mix → Output
 
 #![allow(clippy::type_complexity, clippy::too_many_arguments)]
+// The vst3_com vtable macro, expanded by nih_export_vst3!, ends an
+// expression with a semicolon. Newer rustc warns about that, and builds
+// that deny warnings then fail on code that is not ours. Remove this when
+// vst3_com is updated.
+#![allow(unknown_lints)]
+#![allow(semicolon_in_expressions_from_macros)]
+#![allow(semicolon_in_expressions_from_non_local_macros)]
 
 use crossbeam_channel::{Receiver, Sender};
 use nih_plug::prelude::*;
