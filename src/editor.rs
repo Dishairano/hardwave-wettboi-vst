@@ -248,11 +248,54 @@ pub fn snapshot_params(
     }
 }
 
+/// The token as a JavaScript string literal, or `null` when there is none.
+///
+/// It is encoded by serde_json, never pasted into the script by hand, so a quote or a backslash in
+/// a token cannot end the string. serde_json leaves `<`, `>` and `&` alone, and older WebViews do
+/// not accept U+2028 and U+2029 inside a string literal, so those are written as `\u` escapes too:
+/// a `</script>` in a token stays inside the string wherever the script ends up.
+fn token_literal(token: Option<&str>) -> String {
+    let Some(json) = token.and_then(|t| serde_json::to_string(t).ok()) else {
+        return "null".to_string();
+    };
+    let mut literal = String::with_capacity(json.len());
+    for c in json.chars() {
+        match c {
+            '<' => literal.push_str("\\u003c"),
+            '>' => literal.push_str("\\u003e"),
+            '&' => literal.push_str("\\u0026"),
+            '\u{2028}' => literal.push_str("\\u2028"),
+            '\u{2029}' => literal.push_str("\\u2029"),
+            c => literal.push(c),
+        }
+    }
+    literal
+}
+
+/// The part of the init script that hands the page its sign-in token.
+///
+/// The token used to travel in the window's URL, which put it in the web servers' access logs and
+/// in the WebView's history. The page reads `window.__HARDWAVE_VST_TOKEN` first now. It is only set
+/// on our own domain, so a page the window is ever sent to elsewhere never sees it.
+fn token_script(token: Option<&str>) -> String {
+    let token = token_literal(token);
+    format!(
+        r#"
+(function() {{
+    var h = String(location.hostname || '').toLowerCase();
+    var ours = h === 'hardwavestudios.com' || h.endsWith('.hardwavestudios.com');
+    window.__HARDWAVE_VST_TOKEN = ours ? {token} : null;
+}})();
+"#
+    )
+}
+
 /// Build the init JavaScript that gets injected into the webview on load.
-fn ipc_init_script(params: &WettBoiParams, bpm: f32) -> String {
+fn ipc_init_script(params: &WettBoiParams, bpm: f32, token: Option<&str>) -> String {
     let snapshot = snapshot_params(params, bpm, 0.0, 0.0);
     let initial_json = serde_json::to_string(&snapshot).unwrap_or_else(|_| "null".into());
     let version = env!("CARGO_PKG_VERSION");
+    let token_js = token_script(token);
 
     format!(
         r#"
@@ -276,6 +319,7 @@ fn ipc_init_script(params: &WettBoiParams, bpm: f32) -> String {
 
 window.__HARDWAVE_VST = true;
 window.__HARDWAVE_VST_VERSION = '{version}';
+{token_js}
 window.__hardwave = {{
     postMessage: function(msg) {{
         window.ipc.postMessage(JSON.stringify(msg));
@@ -536,14 +580,10 @@ impl Editor for WettBoiEditor {
         );
 
         let version = env!("CARGO_PKG_VERSION");
-        // The query carries the token, the version, and, inside our
-        // own DAW, which host this is: the plug-ins are free there
-        // and paid everywhere else.
-        let url = format!(
-            "{}{}",
-            WETTBOI_URL,
-            crate::auth::url_query(self.auth_token.as_deref(), version)
-        );
+        // The query carries the version and, inside our own DAW, which
+        // host this is: the plug-ins are free there and paid everywhere
+        // else. The token goes in through the init script, never the URL.
+        let url = format!("{}{}", WETTBOI_URL, crate::auth::url_query(version));
         elog!(
             "[HardwaveWettBoi] Loading URL: {} (token {})",
             WETTBOI_URL,
@@ -555,7 +595,7 @@ impl Editor for WettBoiEditor {
         );
 
         let param_map = Arc::new(build_param_map(&self.params));
-        let init_js = ipc_init_script(&self.params, 150.0);
+        let init_js = ipc_init_script(&self.params, 150.0, self.auth_token.as_deref());
         elog!("[HardwaveWettBoi] Init script: {} bytes", init_js.len());
         let raw_handle = extract_raw_handle(&parent);
         elog!("[HardwaveWettBoi] Parent window handle: 0x{:x}", raw_handle);
@@ -749,8 +789,8 @@ impl WithUrlOrOffline for wry::WebViewBuilder<'_> {
 }
 
 /// Writes to the editor log when a page starts and when it finishes loading, so the log says
-/// whether the page the WebView was given ever loaded. The URL is logged without its query string,
-/// which holds the licence token.
+/// whether the page the WebView was given ever loaded. The URL is logged without its query string:
+/// the token no longer travels there, but a page the window navigates to may put anything in it.
 fn log_page_load(event: wry::PageLoadEvent, url: String) {
     elog!(
         "[HardwaveWettBoi] page load {}: {}",
@@ -1761,6 +1801,97 @@ mod packet_server_tests {
         client.read_to_string(&mut reply).unwrap();
         assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
         assert!(reply.contains("Access-Control-Allow-Private-Network: true"));
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+
+    fn window_url() -> String {
+        format!(
+            "{}{}",
+            WETTBOI_URL,
+            crate::auth::url_query(env!("CARGO_PKG_VERSION"))
+        )
+    }
+
+    /// The window's address never holds the token, signed in or not, while the init script for
+    /// the same token does: the token moved, it did not disappear.
+    #[test]
+    fn the_window_url_never_carries_the_token() {
+        let params = WettBoiParams::default();
+        for token in [Some("SECRETTOKEN"), None] {
+            let url = window_url();
+            assert!(!url.contains("token"), "{url}");
+            assert!(!url.contains("SECRETTOKEN"), "{url}");
+            let script = ipc_init_script(&params, 150.0, token);
+            assert_eq!(script.contains("SECRETTOKEN"), token.is_some());
+        }
+    }
+
+    #[test]
+    fn the_token_is_only_a_json_string_literal() {
+        let params = WettBoiParams::default();
+        let script = ipc_init_script(&params, 150.0, Some("abc.DEF-123"));
+        assert!(
+            script.contains("window.__HARDWAVE_VST_TOKEN = ours ? \"abc.DEF-123\" : null;"),
+            "{script}"
+        );
+        assert_eq!(
+            script.matches("abc.DEF-123").count(),
+            1,
+            "the token appears once, as the literal: {script}"
+        );
+        assert!(script.contains("window.__HARDWAVE_VST_VERSION"));
+    }
+
+    #[test]
+    fn no_token_is_null() {
+        let params = WettBoiParams::default();
+        let script = ipc_init_script(&params, 150.0, None);
+        assert!(
+            script.contains("window.__HARDWAVE_VST_TOKEN = ours ? null : null;"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn the_token_is_only_set_on_our_own_domain() {
+        let script = ipc_init_script(&WettBoiParams::default(), 150.0, Some("abc"));
+        assert!(script.contains("location.hostname"), "{script}");
+        assert!(script.contains("h === 'hardwavestudios.com'"), "{script}");
+        assert!(
+            script.contains("h.endsWith('.hardwavestudios.com')"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn a_hostile_token_cannot_break_out() {
+        let token = "a\"b\\c</script><script>alert(1)</script>&\u{2028}";
+        let literal = token_literal(Some(token));
+        // One string literal, with the quote and the backslash escaped by serde_json.
+        assert!(literal.starts_with("\"a\\\"b\\\\c"), "{literal}");
+        assert!(literal.ends_with('"'), "{literal}");
+        // Every character that could end a script or a line is written as an escape instead.
+        for c in ['<', '>', '&', '\u{2028}'] {
+            assert!(!literal.contains(c), "{c:?} left raw: {literal}");
+        }
+        assert_eq!(literal.matches("u003c").count(), 3, "{literal}");
+        assert_eq!(literal.matches("u003e").count(), 3, "{literal}");
+        assert_eq!(literal.matches("u0026").count(), 1, "{literal}");
+        assert_eq!(literal.matches("u2028").count(), 1, "{literal}");
+        // Still the same string to anything that reads it as JSON, which is what JS does.
+        assert_eq!(
+            serde_json::from_str::<String>(&literal).expect("valid JSON"),
+            token
+        );
+
+        let script = ipc_init_script(&WettBoiParams::default(), 150.0, Some(token));
+        assert!(!script.contains("</script>"), "{script}");
+        assert!(!script.contains("a\"b"), "an unescaped quote: {script}");
+        assert!(script.contains(&literal), "{script}");
     }
 }
 
