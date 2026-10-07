@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.8-rc1
+
+- Say which host the plug-in is running in
+
 ## 0.4.7-rc1
 
 - **The log we ask for when a window stays blank now says what happened.** It records whether the interface loaded, and what went wrong if it did not, so a report can be answered instead of guessed at.
