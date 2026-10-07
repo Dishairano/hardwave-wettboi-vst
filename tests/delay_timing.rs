@@ -157,6 +157,55 @@ fn ping_pong_alternates_sides() {
     );
 }
 
+/// Ping-pong on a centred source, which is most of what goes through it: a
+/// vocal, a snare, a mono synth. Each input used to feed its own line, so a
+/// centred impulse put the same echo in both lines and every repeat came out
+/// of the middle. The input now goes into the left line only, so the first
+/// echo has to come from one side and the next from the other.
+#[test]
+fn ping_pong_moves_a_centred_source() {
+    let mut d = StereoDelay::new(SR);
+    d.set_time_ms(100.0, 100.0);
+    d.set_feedback(60.0);
+    d.set_filter(20.0, 20_000.0);
+    d.set_ping_pong(true);
+    d.set_modulation(0.5, 0.0);
+    d.set_saturation(0.0);
+
+    let n = 24_000; // two echoes at 100 ms
+    let mut l = Vec::with_capacity(n);
+    let mut r = Vec::with_capacity(n);
+    for i in 0..n {
+        let x = if i == 0 { 1.0 } else { 0.0 };
+        let (a, b) = d.process(x, x); // the same in both: centred
+        l.push(a);
+        r.push(b);
+    }
+
+    let energy_db = |xs: &[f32]| {
+        let e: f32 = xs.iter().map(|v| v * v).sum();
+        10.0 * e.max(1e-30).log10()
+    };
+    let win = 64;
+    let mut louder = Vec::new();
+    for k in 1..=2 {
+        let at = k * 4800;
+        let el = energy_db(&l[at - win..at + win]);
+        let er = energy_db(&r[at - win..at + win]);
+        println!("echo {k} at {at}: L {el:+.1} dB, R {er:+.1} dB");
+        assert!(
+            (el - er).abs() >= 20.0,
+            "echo {k} of a centred impulse is only {:.1} dB louder on one side",
+            (el - er).abs()
+        );
+        louder.push(if el > er { 'L' } else { 'R' });
+    }
+    assert_ne!(
+        louder[0], louder[1],
+        "the second echo came from the same side as the first"
+    );
+}
+
 /// Ping-pong with different times set per side, which is what the plugin ships
 /// with by default: tempo mode, L an eighth and R a dotted eighth. The repeats
 /// used to land at 250, 625, 875, 1250 ms, gaps of 375, 250, 375: a limp, not a
