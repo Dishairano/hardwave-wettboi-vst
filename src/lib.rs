@@ -7,7 +7,6 @@
 //!   Dly→Rev: Input → Delay → Reverb → Sidechain → Mix → Output
 
 #![allow(clippy::type_complexity, clippy::too_many_arguments)]
-
 // The vst3_com vtable macro, expanded by nih_export_vst3!, ends an
 // expression with a semicolon. Newer rustc warns about that, and builds
 // that deny warnings then fail on code that is not ours. Remove this when
