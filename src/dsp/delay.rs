@@ -5,6 +5,19 @@ use super::filters::OnePoleSVF;
 
 const MAX_DELAY_SAMPLES: usize = 88200 * 4; // ~4s at 88.2k
 
+/// Soft clip for the feedback path: tanh(x * drive) / drive.
+///
+/// Its slope at zero is exactly 1 and it never returns more than it is given,
+/// so it rounds off loud repeats without lifting quiet ones, and the loop gain
+/// can never exceed the Feedback setting. The old tanh(x * drive) / tanh(drive)
+/// kept the ceiling at 1 instead, which made quiet repeats up to 5x louder: at
+/// 35% feedback and full saturation the loop gain was 1.75 and the delay never
+/// died out.
+#[inline]
+fn saturate(x: f32, drive: f32) -> f32 {
+    (x * drive).tanh() / drive
+}
+
 pub struct StereoDelay {
     buf_l: Vec<f32>,
     buf_r: Vec<f32>,
@@ -143,15 +156,22 @@ impl StereoDelay {
         // Saturation on feedback path (soft tanh)
         if self.saturation > 0.0 {
             let drive = 1.0 + self.saturation / 100.0 * 4.0; // 1x–5x drive
-            filt_l = (filt_l * drive).tanh() / drive.tanh();
-            filt_r = (filt_r * drive).tanh() / drive.tanh();
+            filt_l = saturate(filt_l, drive);
+            filt_r = saturate(filt_r, drive);
         }
 
         // Write to delay line
         if self.ping_pong {
-            // Ping-pong: left input + right feedback → left buffer, and vice versa
-            self.buf_l[self.write_idx] = in_l + filt_r * self.feedback;
-            self.buf_r[self.write_idx] = in_r + filt_l * self.feedback;
+            // Ping-pong: the input goes into the left line only, and the
+            // feedback crosses over, so each repeat comes out of the other
+            // side. Feeding each input into its own line, as this used to,
+            // gave a centred source the same echo in both lines: it bounced
+            // from the middle to the middle and nothing moved. The two inputs
+            // are summed at equal power, so a centred source keeps the echo
+            // energy it had and a hard-panned one comes back 3 dB lower.
+            let mono = (in_l + in_r) * std::f32::consts::FRAC_1_SQRT_2;
+            self.buf_l[self.write_idx] = mono + filt_r * self.feedback;
+            self.buf_r[self.write_idx] = filt_l * self.feedback;
         } else {
             self.buf_l[self.write_idx] = in_l + filt_l * self.feedback;
             self.buf_r[self.write_idx] = in_r + filt_r * self.feedback;
@@ -180,5 +200,34 @@ impl StereoDelay {
         self.filter_l.reset();
         self.filter_r.reset();
         self.mod_phase = 0.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::saturate;
+
+    #[test]
+    fn saturation_never_adds_gain() {
+        for drive in [1.0_f32, 2.0, 3.0, 5.0] {
+            // Unity for quiet signals, so the Feedback control sets the decay.
+            let small = 1.0e-4;
+            let gain = saturate(small, drive) / small;
+            assert!(
+                (gain - 1.0).abs() < 1.0e-3,
+                "drive {drive}: small-signal gain {gain}"
+            );
+            // Never more out than in, at any level, either polarity.
+            for i in 1..=2000 {
+                let x = i as f32 * 0.005;
+                for x in [x, -x] {
+                    let y = saturate(x, drive);
+                    assert!(
+                        y.abs() <= x.abs(),
+                        "drive {drive}: saturate({x}) = {y} is louder than its input"
+                    );
+                }
+            }
+        }
     }
 }
