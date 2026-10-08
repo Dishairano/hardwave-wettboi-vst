@@ -63,13 +63,12 @@ pub fn host_kind() -> Option<String> {
 
 /// The query the window is opened with, so the page knows the version
 /// it is talking to and where it is running.
-pub fn url_query(token: Option<&str>, version: &str) -> String {
-    let mut query = String::new();
-    if let Some(token) = token {
-        query.push_str(&format!("?token={token}&v={version}"));
-    } else {
-        query.push_str(&format!("?v={version}"));
-    }
+///
+/// The sign-in token never goes in here. A URL ends up in server access
+/// logs, history and anything else that records it; the token reaches
+/// the page through the editor's initialization script instead.
+pub fn url_query(version: &str) -> String {
+    let mut query = format!("?v={version}");
     if let Some(host) = host_kind() {
         query.push_str(&format!("&host={host}"));
     }
@@ -81,18 +80,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_token_and_a_version_always_go_in() {
-        let query = url_query(Some("abc"), "1.2.3");
-        assert!(query.starts_with("?token=abc&v=1.2.3"), "{query}");
-        let anonymous = url_query(None, "1.2.3");
-        assert!(anonymous.starts_with("?v=1.2.3"), "{anonymous}");
+    fn the_version_always_goes_in() {
+        let query = url_query("1.2.3");
+        assert!(query.starts_with("?v=1.2.3"), "{query}");
+    }
+
+    #[test]
+    fn the_query_never_carries_a_token() {
+        let query = url_query("1.2.3");
+        assert!(!query.contains("token"), "{query}");
     }
 
     #[test]
     fn the_host_is_named_only_when_it_is_known() {
         // The test process is not the DAW, so nothing is claimed.
         if std::env::var("HARDWAVE_HOST").is_err() {
-            let query = url_query(None, "1.0.0");
+            let query = url_query("1.0.0");
             assert!(
                 !query.contains("host="),
                 "a plug-in in someone else's host claims nothing: {query}"
