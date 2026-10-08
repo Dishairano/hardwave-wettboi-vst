@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.9-rc1
+
+- Delay tails fade out, ping-pong bounces, reverb Decay and wet level are right (#16)
+- Your sign-in no longer travels in the plug-in window's web address (#15)
+
 ## 0.4.8-rc1
 
 - Say which host the plug-in is running in
