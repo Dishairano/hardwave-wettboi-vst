@@ -1,2 +1,8 @@
 [alias]
 xtask = "run --package xtask --release --"
+
+# Link the C runtime statically on Windows. A DLL built against the dynamic runtime imports
+# VCRUNTIME140.dll, which is not part of Windows, so it fails to load (error 126) on a computer
+# without the Visual C++ Redistributable.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
