@@ -56,7 +56,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --release
-
       - name: Build plugin bundle
         run: cargo xtask bundle hardwave-wettboi --release
       - name: Security audit
