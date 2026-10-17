@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.10-rc1
+
+- Update rustls to 0.23.46 (RUSTSEC-2026-0346 to 0349) (#18)
+
 ## 0.4.9-rc1
 
 - Delay tails fade out, ping-pong bounces, reverb Decay and wet level are right (#16)
