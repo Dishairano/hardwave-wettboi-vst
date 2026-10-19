@@ -150,6 +150,9 @@ struct HardwaveWettBoi {
     // State
     sample_rate: f32,
     bpm: f32,
+    /// Beats in one bar, from the host's time signature. The LFO's bar values
+    /// in tempo mode are counted in these. 4 until a host says otherwise.
+    beats_per_bar: f32,
     duck_depth: f32,
     lfo_value: f32,
     /// Set per-buffer when any DSP sample evaluates to non-finite. The buffer
@@ -281,6 +284,26 @@ pub fn mix_dry_wet(dry: f32, wet: f32, mix: f32) -> f32 {
     dry * (1.0 - m) + wet * m
 }
 
+/// The output gain as a multiplier on the mixed signal.
+///
+/// 0 dB comes out as exactly 1.0, and a sample times 1.0 is that sample, so a
+/// project that never touches the Output control is bit for bit what it was
+/// before the control existed.
+#[inline]
+pub fn output_gain(db: f32) -> f32 {
+    util::db_to_gain_fast(db)
+}
+
+/// Parameters added after the first release that saved state.
+///
+/// A state saved before they existed does not mention them, and nih-plug leaves
+/// a parameter the state does not mention wherever it was. Loading an old preset
+/// into a window with tempo sync on would then play the preset's LFO at a note
+/// value instead of the rate it was saved with, and at whatever output gain was
+/// set. Filling them in at their defaults makes an old state sound the way it
+/// did when it was saved.
+const ADDED_LATER: [&str; 3] = ["lfo_sync", "lfo_note", "out_gain"];
+
 /// Check a saved state before any of it reaches a parameter.
 ///
 /// State comes from a project file or a preset file. It is input like any
@@ -360,6 +383,24 @@ pub fn sanitize_state(state: &mut PluginState) {
             _ => false,
         }
     });
+
+    for id in ADDED_LATER {
+        if state.params.contains_key(id) {
+            continue;
+        }
+        let Some(ptr) = known.get(id) else {
+            continue;
+        };
+        // SAFETY: as above, `ptr` points into `params`, which is still alive,
+        // and `params` was just built, so its value is the default.
+        let plain = unsafe { ptr.unmodulated_plain_value() };
+        let value = match ptr {
+            ParamPtr::FloatParam(_) => ParamValue::F32(plain),
+            ParamPtr::BoolParam(_) => ParamValue::Bool(plain >= 0.5),
+            ParamPtr::IntParam(_) | ParamPtr::EnumParam(_) => ParamValue::I32(plain.round() as i32),
+        };
+        state.params.insert(id.to_string(), value);
+    }
 }
 
 impl Default for HardwaveWettBoi {
@@ -382,6 +423,7 @@ impl Default for HardwaveWettBoi {
             update_counter: 0,
             sample_rate: sr,
             bpm: 150.0,
+            beats_per_bar: 4.0,
             duck_depth: 0.0,
             lfo_value: 0.0,
             nan_detected: false,
@@ -490,8 +532,15 @@ impl Plugin for HardwaveWettBoi {
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let transport = context.transport();
-        if let Some(tempo) = transport.tempo {
+        // A tempo of zero or NaN is not a tempo. Keep the last real one, which
+        // is also what happens when the host sends none at all.
+        if let Some(tempo) = transport.tempo.filter(|t| t.is_finite() && *t > 0.0) {
             self.bpm = tempo as f32;
+        }
+        if let Some(beats) =
+            params::beats_per_bar(transport.time_sig_numerator, transport.time_sig_denominator)
+        {
+            self.beats_per_bar = beats;
         }
 
         let p = &self.params;
@@ -517,6 +566,8 @@ impl Plugin for HardwaveWettBoi {
 
         let lfo_enabled = p.lfo_enabled.value();
         let lfo_rate = p.lfo_rate.value();
+        let lfo_sync = p.lfo_sync.value();
+        let lfo_note = p.lfo_note.value();
         let lfo_depth_pct = p.lfo_depth.value();
         let lfo_phase = p.lfo_phase.value();
         let lfo_shape = p.lfo_shape.value();
@@ -572,7 +623,14 @@ impl Plugin for HardwaveWettBoi {
         self.delay.set_modulation(dly_mod_rate, dly_mod_depth);
         self.delay.set_saturation(dly_saturation);
 
-        self.lfo.set_rate(lfo_rate);
+        // In tempo mode one LFO cycle lasts the chosen note at the host's
+        // tempo. FREE is the Hz knob, exactly as before tempo mode existed.
+        if lfo_sync {
+            self.lfo
+                .set_rate(lfo_note.rate_hz(self.bpm, self.beats_per_bar));
+        } else {
+            self.lfo.set_rate(lfo_rate);
+        }
         self.lfo.set_phase_offset(lfo_phase);
         self.lfo.set_shape(match lfo_shape {
             params::LfoShape::Sine => LfoShape::Sine,
@@ -597,6 +655,10 @@ impl Plugin for HardwaveWettBoi {
         self.output_peak_r *= decay;
 
         for (sample_idx, mut frame) in buffer.iter_samples().enumerate() {
+            // Advanced on every sample, bypassed or not, so the ramp keeps time
+            // with the audio.
+            let out_gain = output_gain(p.out_gain.smoothed.next());
+
             if frame.len() < 2 {
                 continue;
             }
@@ -681,8 +743,11 @@ impl Plugin for HardwaveWettBoi {
             // the output. Parallel routing sums reverb AND delay into that wet,
             // which is why parallel sounded louder than the serial modes. A mix
             // control has to trade one for the other.
-            let out_l = mix_dry_wet(dry_l, ducked_l, mix);
-            let out_r = mix_dry_wet(dry_r, ducked_r, mix);
+            //
+            // The output gain comes last, on the mixed signal, so it moves the
+            // whole plug-in's level and not one side of the mix.
+            let out_l = mix_dry_wet(dry_l, ducked_l, mix) * out_gain;
+            let out_r = mix_dry_wet(dry_r, ducked_r, mix) * out_gain;
 
             // Safety net: if a DSP regression ever produces NaN/Inf, fall back
             // to the user's dry signal instead of writing junk that the host
