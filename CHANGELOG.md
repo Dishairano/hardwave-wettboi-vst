@@ -2,7 +2,8 @@
 
 ## 0.4.10-rc1
 
-- Update rustls to 0.23.46 (RUSTSEC-2026-0346 to 0349) (#18)
+- On Windows, WettBoi now loads on computers without the Visual C++ Redistributable installed (#19)
+- Security update: rustls 0.23.46, fixing four advisories (RUSTSEC-2026-0346 to 0349) (#18)
 
 ## 0.4.9-rc1
 
