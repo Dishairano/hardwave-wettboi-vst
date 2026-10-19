@@ -110,6 +110,62 @@ impl NoteDiv {
     }
 }
 
+/// LFO note value for tempo sync: how long one LFO cycle lasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+pub enum LfoNote {
+    #[name = "1/16"]
+    Sixteenth,
+    #[name = "1/8"]
+    Eighth,
+    #[name = "1/4"]
+    Quarter,
+    #[name = "1/2"]
+    Half,
+    #[name = "1 bar"]
+    Bar,
+    #[name = "2 bars"]
+    TwoBars,
+    #[name = "4 bars"]
+    FourBars,
+    #[name = "8 bars"]
+    EightBars,
+}
+
+impl LfoNote {
+    /// Returns one LFO cycle in beats (quarter note = 1.0). The bar values are
+    /// counted in bars of `beats_per_bar`, so they follow the song's time
+    /// signature: in 4/4 they are 4, 8, 16 and 32 beats.
+    pub fn beats(&self, beats_per_bar: f32) -> f32 {
+        match self {
+            LfoNote::Sixteenth => 0.25,
+            LfoNote::Eighth => 0.5,
+            LfoNote::Quarter => 1.0,
+            LfoNote::Half => 2.0,
+            LfoNote::Bar => beats_per_bar,
+            LfoNote::TwoBars => 2.0 * beats_per_bar,
+            LfoNote::FourBars => 4.0 * beats_per_bar,
+            LfoNote::EightBars => 8.0 * beats_per_bar,
+        }
+    }
+
+    /// The LFO rate in Hz that makes one cycle last this note at `bpm`.
+    pub fn rate_hz(&self, bpm: f32, beats_per_bar: f32) -> f32 {
+        (bpm / 60.0) / self.beats(beats_per_bar)
+    }
+}
+
+/// How many beats (quarter notes) one bar holds, from the host's time signature.
+///
+/// The host's tempo counts quarter notes, so a bar of 3/4 is 3 beats and a bar
+/// of 6/8 is 3 as well, not 6. Without a denominator the numerator is taken as
+/// quarter notes. Returns None when the host gives no numerator or a value no
+/// real time signature has, so the caller keeps the bar it already had.
+pub fn beats_per_bar(numerator: Option<i32>, denominator: Option<i32>) -> Option<f32> {
+    let num = numerator.filter(|n| (1..=64).contains(n))?;
+    let den = denominator.filter(|d| (1..=64).contains(d)).unwrap_or(4);
+    Some(num as f32 * 4.0 / den as f32)
+}
+
 #[derive(Params)]
 pub struct WettBoiParams {
     // ── Reverb ──────────────────────────────────────────────────────────────
@@ -199,6 +255,18 @@ pub struct WettBoiParams {
     pub bypass: BoolParam,
     #[id = "routing"]
     pub routing: EnumParam<RoutingMode>,
+
+    // ── Added later ─────────────────────────────────────────────────────────
+    // These go last on purpose. Some hosts list a plug-in's parameters, and
+    // store its automation, by position rather than by ID. Putting them next to
+    // their section would move every parameter after them one place down, and
+    // an existing project's automation would then land on the wrong control.
+    #[id = "lfo_sync"]
+    pub lfo_sync: BoolParam,
+    #[id = "lfo_note"]
+    pub lfo_note: EnumParam<LfoNote>,
+    #[id = "out_gain"]
+    pub out_gain: FloatParam,
 }
 
 impl Default for WettBoiParams {
@@ -495,6 +563,25 @@ impl Default for WettBoiParams {
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
             bypass: BoolParam::new("Bypass", false),
             routing: EnumParam::new("Routing", RoutingMode::Parallel),
+
+            // Added later. Off, 1/4 and 0 dB are what the plug-in did before
+            // these existed, so a project or preset saved earlier sounds the
+            // same.
+            lfo_sync: BoolParam::new("LFO Sync", false),
+            lfo_note: EnumParam::new("LFO Note", LfoNote::Quarter),
+            // Smoothed in decibels, so a fast move or a jump in automation
+            // ramps over 50 ms instead of stepping, which is what clicks.
+            out_gain: FloatParam::new(
+                "Output",
+                0.0,
+                FloatRange::Linear {
+                    min: -24.0,
+                    max: 12.0,
+                },
+            )
+            .with_smoother(SmoothingStyle::Linear(50.0))
+            .with_unit(" dB")
+            .with_value_to_string(formatters::v2s_f32_rounded(1)),
         }
     }
 }

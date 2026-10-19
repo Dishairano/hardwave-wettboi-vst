@@ -134,6 +134,11 @@ fn build_param_map(params: &WettBoiParams) -> HashMap<String, nih_plug::prelude:
     map.insert("bypass".into(), params.bypass.as_ptr());
     map.insert("routing".into(), params.routing.as_ptr());
 
+    // Added later
+    map.insert("lfo_sync".into(), params.lfo_sync.as_ptr());
+    map.insert("lfo_note".into(), params.lfo_note.as_ptr());
+    map.insert("out_gain".into(), params.out_gain.as_ptr());
+
     elog!("[HardwaveWettBoi] Param map built: {} entries", map.len());
     map
 }
@@ -145,7 +150,7 @@ pub fn snapshot_params(
     duck_depth: f32,
     lfo_value: f32,
 ) -> WbPacket {
-    use crate::params::{LfoShape, LfoTarget, NoteDiv, ReverbType, RoutingMode, ScSource};
+    use crate::params::{LfoNote, LfoShape, LfoTarget, NoteDiv, ReverbType, RoutingMode, ScSource};
 
     let rev_type_str = match params.rev_type.value() {
         ReverbType::Room => "room",
@@ -195,6 +200,17 @@ pub fn snapshot_params(
         }]
     };
 
+    let lfo_note_str = LFO_NOTE_NAMES[match params.lfo_note.value() {
+        LfoNote::Sixteenth => 0,
+        LfoNote::Eighth => 1,
+        LfoNote::Quarter => 2,
+        LfoNote::Half => 3,
+        LfoNote::Bar => 4,
+        LfoNote::TwoBars => 5,
+        LfoNote::FourBars => 6,
+        LfoNote::EightBars => 7,
+    }];
+
     WbPacket {
         bpm,
         rev_enabled: params.rev_enabled.value(),
@@ -223,6 +239,8 @@ pub fn snapshot_params(
         lfo_shape: lfo_shape_str.to_string(),
         lfo_target: lfo_target_str.to_string(),
         lfo_value,
+        lfo_sync: params.lfo_sync.value(),
+        lfo_note: lfo_note_str.to_string(),
         dly_enabled: params.dly_enabled.value(),
         dly_sync: params.dly_sync.value(),
         dly_time_l: params.dly_time_l.value(),
@@ -238,6 +256,7 @@ pub fn snapshot_params(
         dly_mod_depth: params.dly_mod_depth.value(),
         dly_saturation: params.dly_saturation.value(),
         mix: params.mix.value(),
+        out_gain: params.out_gain.value(),
         bypass: params.bypass.value(),
         routing: routing_str.to_string(),
         preset: "Init".to_string(),
@@ -352,6 +371,18 @@ pub fn note_div_index(name: &str) -> Option<usize> {
 /// Every note division, in `NoteDiv` order. The UI shows exactly these.
 pub const NOTE_DIV_NAMES: [&str; 8] = ["1/16", "1/8", "d1/8", "1/4", "d1/4", "1/2", "d1/2", "1/1"];
 
+/// The index of an LFO note value as the UI names it, matching the order of the
+/// `LfoNote` variants in `params.rs`. Returns None for a name we do not have.
+pub fn lfo_note_index(name: &str) -> Option<usize> {
+    LFO_NOTE_NAMES.iter().position(|n| *n == name)
+}
+
+/// Every LFO note value, in `LfoNote` order. The UI's RATE knob steps through
+/// exactly these in tempo mode, and they are the names the host shows too.
+pub const LFO_NOTE_NAMES: [&str; 8] = [
+    "1/16", "1/8", "1/4", "1/2", "1 bar", "2 bars", "4 bars", "8 bars",
+];
+
 /// Every enum value the UI can send has to land on a variant index here, or the
 /// parameter silently never moves. That is not a hypothetical: the two delay
 /// note divisions were missing from this table in the shipped plugin, so every
@@ -400,6 +431,7 @@ pub fn string_to_param_value(param_id: &str, s: &str) -> Option<f32> {
         // variants in params.rs; note_div_index is the single source of truth
         // for that and is covered by a test.
         "dly_note_l" | "dly_note_r" => note_div_index(s).map(|i| i as f32),
+        "lfo_note" => lfo_note_index(s).map(|i| i as f32),
         _ => None,
     }
 }

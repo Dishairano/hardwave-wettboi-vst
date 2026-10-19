@@ -44,6 +44,11 @@ pub struct WbPacket {
     pub lfo_target: String,
     /// Current LFO output value (-1.0 to 1.0) for visualization.
     pub lfo_value: f32,
+    /// Tempo sync for the LFO. The editor shows the TEMPO/FREE switch only when
+    /// the packet carries this, so an older plug-in keeps the interface it had.
+    pub lfo_sync: bool,
+    /// The LFO's note value in tempo mode, spelled as the UI shows it ("1/4").
+    pub lfo_note: String,
 
     // ── Delay ───────────────────────────────────────────────────────────────
     pub dly_enabled: bool,
@@ -63,6 +68,9 @@ pub struct WbPacket {
 
     // ── Global ──────────────────────────────────────────────────────────────
     pub mix: f32,
+    /// Output gain in dB, applied after the mix. Present only from the build
+    /// that has it, which is how the editor knows to show the slider.
+    pub out_gain: f32,
     pub bypass: bool,
     pub routing: String,
     pub preset: String,
