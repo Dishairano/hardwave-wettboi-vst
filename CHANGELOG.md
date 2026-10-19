@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.11-rc1
 
 - The LFO can follow your song's tempo. Switch it to TEMPO and the Rate knob picks a note value, from 1/16 up to 8 bars, instead of Hz. FREE works as before and is still the default (#22)
 - A new Output control next to Mix sets WettBoi's level from -24 to +12 dB, so you can win back what the effect takes off your signal. It starts at 0 dB, which changes nothing (#22)
