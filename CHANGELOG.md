@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.11-rc1
+
+- LFO tempo sync and an output gain (#22)
+
 ## Unreleased
 
 - The LFO can follow your song's tempo. Switch it to TEMPO and the Rate knob picks a note value, from 1/16 up to 8 bars, instead of Hz. FREE works as before and is still the default (#22)
