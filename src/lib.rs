@@ -28,6 +28,8 @@ pub mod dsp;
 pub mod editor;
 pub mod params;
 mod protocol;
+#[cfg(any(target_os = "windows", test))]
+mod webview_win;
 
 // The CLAP entry point. `clap_export` stands in for `nih_export_clap!` so the
 // `clap.state` extension can check a saved state's length before the framework

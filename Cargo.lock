@@ -872,6 +872,8 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+ "webview2-com",
+ "windows 0.58.0",
  "windows-sys 0.52.0",
  "wry",
 ]
