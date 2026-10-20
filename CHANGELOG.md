@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.12-rc2
+
+- On Windows, reopening the window right after you close it works again: no more wait of up to half a minute, and no empty window (#27)
+
 ## 0.4.12-rc1
 
 - On Windows, opening the window no longer makes your DAW wait: the window appears at once and the interface follows about a second later. If the interface cannot load, it now tries again instead of staying blank (#24, #26)
