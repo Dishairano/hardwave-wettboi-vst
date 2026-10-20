@@ -15,6 +15,55 @@
 //! Everything else follows wry 0.46, which built this window until now: the same browser
 //! arguments and settings, a container window filling the host's window, and the host's window
 //! subclassed so the page follows its size, its focus and its position.
+//!
+//! Each plug-in instance keeps its WebView2 environment, and with it the browser process, after
+//! its window closes, and its next window only asks that environment for a new controller. In
+//! 0.4.12-rc1 a closed window let its environment go, and the reopen a few seconds later started a
+//! new one on the same user data folder while the old browser process was still shutting down: the
+//! environment came at once and the controller took 31 s (FL Studio, 20 Oct 2026). A browser that
+//! is never shut down between close and reopen leaves nothing to wait for.
+
+use std::path::{Path, PathBuf};
+
+/// Each plug-in instance's WebView2 environment and the folder it runs in, kept from the moment it
+/// is created until the instance itself goes, across every close and reopen of its window.
+struct Kept<T> {
+    envs: Vec<(u64, PathBuf, T)>,
+}
+
+impl<T> Default for Kept<T> {
+    fn default() -> Self {
+        Self { envs: Vec::new() }
+    }
+}
+
+// Only the Windows build keeps environments; the tests run it everywhere.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+impl<T: Clone + PartialEq> Kept<T> {
+    /// The environment `instance` had last, if it still has one.
+    fn get(&self, instance: u64) -> Option<(PathBuf, T)> {
+        self.envs
+            .iter()
+            .find(|(i, _, _)| *i == instance)
+            .map(|(_, dir, env)| (dir.clone(), env.clone()))
+    }
+
+    /// `env` is now the environment of `instance`, in place of any it had.
+    fn keep(&mut self, instance: u64, dir: &Path, env: T) {
+        self.envs.retain(|(i, _, _)| *i != instance);
+        self.envs.push((instance, dir.to_path_buf(), env));
+    }
+
+    /// `env` failed: forget it, unless `instance` has a newer one by now.
+    fn forget(&mut self, instance: u64, env: &T) {
+        self.envs.retain(|(i, _, e)| !(*i == instance && e == env));
+    }
+
+    /// Let go of the environments of instances that are gone.
+    fn release(&mut self, gone: &[u64]) {
+        self.envs.retain(|(i, _, _)| !gone.contains(i));
+    }
+}
 
 /// When the page may be opened: once the WebView exists and its start-up scripts are in, so that
 /// they run on the page, and once the probe has said whether the interface can be reached.
@@ -66,7 +115,7 @@ impl Gate {
 }
 
 #[cfg(target_os = "windows")]
-pub use windows_page::{open, Page, Spec};
+pub use windows_page::{open, release, Page, Spec};
 // For the keeper; a plug-in without one has no use for it.
 #[cfg(target_os = "windows")]
 #[allow(unused_imports)]
@@ -74,11 +123,12 @@ pub use windows_page::Watch;
 
 #[cfg(target_os = "windows")]
 mod windows_page {
-    use super::Gate;
+    use super::{Gate, Kept};
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
     use std::rc::{Rc, Weak};
+    use std::sync::Mutex;
     use std::time::Instant;
 
     use webview2_com::Microsoft::Web::WebView2::Win32::*;
@@ -125,6 +175,9 @@ mod windows_page {
 
     /// What the page needs, all of it handed over when the window opens.
     pub struct Spec {
+        /// The plug-in instance the window belongs to. Its WebView2 environment is kept for it
+        /// after the window closes, until [`release`] says the instance is gone.
+        pub instance: u64,
         /// The interface.
         pub url: String,
         /// Shown instead of the interface when the probe says it cannot be reached.
@@ -161,6 +214,7 @@ mod windows_page {
     const SUBCLASS_ID: usize = 0x4857_5750;
 
     struct Shared {
+        instance: u64,
         parent: HWND,
         container: Cell<HWND>,
         url: String,
@@ -178,6 +232,10 @@ mod windows_page {
         /// lets through: the offline page is a `data:` page the filter knows nothing about.
         own_navigation: Cell<bool>,
         opened_at: Instant,
+        /// The environment in use is the one this instance kept from an earlier window.
+        env_reused: Cell<bool>,
+        /// When the environment was asked for the controller, for the log.
+        controller_asked: Cell<Option<Instant>>,
         env: RefCell<Option<ICoreWebView2Environment>>,
         controller: RefCell<Option<ICoreWebView2Controller>>,
         webview: RefCell<Option<ICoreWebView2>>,
@@ -187,6 +245,61 @@ mod windows_page {
         // The pages on this thread, found again by window from the window procedures. Every page
         // lives on the thread that owns its host window, so the `Rc`s never cross threads.
         static PAGES: RefCell<Vec<Weak<Shared>>> = const { RefCell::new(Vec::new()) };
+        // Each instance's environment, kept on the thread it was made on: WebView2 objects belong
+        // to the thread that made them, as the pages do.
+        static KEPT: RefCell<Kept<ICoreWebView2Environment>> = RefCell::new(Kept::default());
+    }
+
+    /// Instances that are gone. Any thread may be the one that drops an instance, so the kept
+    /// environments are let go by each UI thread itself, the next time it opens or releases one.
+    static RELEASED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+    /// The plug-in instance is gone: its kept environment, and with it the browser process, goes.
+    pub fn release(instance: u64) {
+        if let Ok(mut released) = RELEASED.lock() {
+            released.push(instance);
+        }
+        let kept = KEPT.try_with(|kept| kept.try_borrow().map(|k| k.get(instance).is_some()));
+        if let Ok(Ok(true)) = kept {
+            elog!("[{NAME}] page: the instance is gone; its WebView2 environment is let go");
+        }
+        let_go_of_released();
+    }
+
+    /// Drop this thread's environments of instances that are gone.
+    fn let_go_of_released() {
+        let gone = RELEASED.lock().map(|r| r.to_vec()).unwrap_or_default();
+        if gone.is_empty() {
+            return;
+        }
+        let _ = KEPT.try_with(|kept| {
+            if let Ok(mut kept) = kept.try_borrow_mut() {
+                kept.release(&gone);
+            }
+        });
+    }
+
+    /// This instance's kept environment and its folder, if it has one.
+    fn kept_environment(instance: u64) -> Option<(PathBuf, ICoreWebView2Environment)> {
+        KEPT.try_with(|kept| kept.try_borrow().ok().and_then(|k| k.get(instance)))
+            .ok()
+            .flatten()
+    }
+
+    fn keep_environment(instance: u64, dir: &Path, env: &ICoreWebView2Environment) {
+        let _ = KEPT.try_with(|kept| {
+            if let Ok(mut kept) = kept.try_borrow_mut() {
+                kept.keep(instance, dir, env.clone());
+            }
+        });
+    }
+
+    fn forget_environment(instance: u64, env: &ICoreWebView2Environment) {
+        let _ = KEPT.try_with(|kept| {
+            if let Ok(mut kept) = kept.try_borrow_mut() {
+                kept.forget(instance, env);
+            }
+        });
     }
 
     /// Start the page in `parent`, the host's window, and return at once.
@@ -195,6 +308,7 @@ mod windows_page {
         // normally is already.
         let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
         let shared = Rc::new(Shared {
+            instance: spec.instance,
             parent: HWND(parent as _),
             container: Cell::new(HWND::default()),
             url: spec.url,
@@ -212,6 +326,8 @@ mod windows_page {
             loaded: Cell::new(false),
             own_navigation: Cell::new(false),
             opened_at: Instant::now(),
+            env_reused: Cell::new(false),
+            controller_asked: Cell::new(None),
             env: RefCell::new(None),
             controller: RefCell::new(None),
             webview: RefCell::new(None),
@@ -228,7 +344,7 @@ mod windows_page {
         }
         shared.hook_parent();
         shared.start_probe(spec.reachable);
-        shared.next_environment();
+        shared.start_environment();
         Page(shared)
     }
 
@@ -258,6 +374,7 @@ mod windows_page {
             if let Ok(mut w) = s.webview.try_borrow_mut() {
                 w.take();
             }
+            // Only this page's hold on the environment: the instance keeps it for its next window.
             if let Ok(mut e) = s.env.try_borrow_mut() {
                 e.take();
             }
@@ -451,8 +568,27 @@ mod windows_page {
             self.open_when_ready();
         }
 
+        /// Ask the environment this instance kept from its last window for a controller, or start
+        /// the browser when it has none.
+        fn start_environment(self: &Rc<Self>) {
+            let_go_of_released();
+            if self.window_gone() {
+                elog!("[{NAME}] page: the window is gone; no WebView2 is started for it");
+                return;
+            }
+            match kept_environment(self.instance) {
+                Some((dir, env)) => {
+                    elog!("[{NAME}] WebView2 data dir: {:?} (environment reused)", dir);
+                    self.env_reused.set(true);
+                    self.environment_ready(&dir, Ok(env));
+                }
+                None => self.next_environment(),
+            }
+        }
+
         /// Start the browser in the next user data folder.
         fn next_environment(self: &Rc<Self>) {
+            self.env_reused.set(false);
             if self.closed() {
                 return;
             }
@@ -466,7 +602,7 @@ mod windows_page {
                 );
                 return;
             };
-            elog!("[{NAME}] WebView2 data dir: {:?}", dir);
+            elog!("[{NAME}] WebView2 data dir: {:?} (new environment)", dir);
             let _ = std::fs::create_dir_all(&dir);
             // WebView2 may call back even when the call itself failed; only the first answer counts.
             let settled = Rc::new(Cell::new(false));
@@ -505,6 +641,13 @@ mod windows_page {
             dir: &Path,
             env: windows::core::Result<ICoreWebView2Environment>,
         ) {
+            // Kept for the instance even when its window closed while the browser started: the
+            // next window then has it at once.
+            if let Ok(env) = &env {
+                if !self.env_reused.get() {
+                    keep_environment(self.instance, dir, env);
+                }
+            }
             if self.closed() {
                 return;
             }
@@ -516,8 +659,17 @@ mod windows_page {
                     return;
                 }
             };
-            elog!("[{NAME}] page: browser started after {} ms", self.ms());
+            elog!(
+                "[{NAME}] page: browser {} after {} ms",
+                if self.env_reused.get() {
+                    "already running (environment reused)"
+                } else {
+                    "started"
+                },
+                self.ms()
+            );
             *self.env.borrow_mut() = Some(env.clone());
+            self.controller_asked.set(Some(Instant::now()));
             let settled = Rc::new(Cell::new(false));
             let handler = {
                 let this = Rc::clone(self);
@@ -552,7 +704,7 @@ mod windows_page {
                 Err(e) => {
                     if !self.closed() {
                         elog!("[{NAME}] WebView creation FAILED in {:?}: {}", dir, e);
-                        self.env.borrow_mut().take();
+                        self.drop_environment();
                         self.next_environment();
                     }
                     return;
@@ -565,9 +717,18 @@ mod windows_page {
                 return;
             }
             elog!(
-                "[{NAME}] WebView created successfully in {:?} after {} ms",
+                "[{NAME}] WebView created successfully in {:?} after {} ms ({} environment, controller in {} ms)",
                 dir,
-                self.ms()
+                self.ms(),
+                if self.env_reused.get() {
+                    "reused"
+                } else {
+                    "new"
+                },
+                self.controller_asked
+                    .get()
+                    .map(|t| t.elapsed().as_millis())
+                    .unwrap_or(0)
             );
             // SAFETY: a live controller, on its own thread.
             if let Err(e) = unsafe { self.set_up(&controller) } {
@@ -582,9 +743,23 @@ mod windows_page {
                 let _ = unsafe { controller.Close() };
                 self.controller.borrow_mut().take();
                 self.webview.borrow_mut().take();
-                self.env.borrow_mut().take();
+                self.drop_environment();
                 self.gate.borrow_mut().webview_lost();
                 self.next_environment();
+            }
+        }
+
+        /// Let go of an environment that failed. Unless the window had gone, which is no fault of
+        /// the environment, the instance forgets it too, so no later window asks it again.
+        fn drop_environment(&self) {
+            let env = self.env.borrow_mut().take();
+            if let Some(env) = env {
+                if !self.window_gone() {
+                    if self.env_reused.get() {
+                        elog!("[{NAME}] page: the reused WebView2 environment failed; starting a new one");
+                    }
+                    forget_environment(self.instance, &env);
+                }
             }
         }
 
@@ -1021,6 +1196,72 @@ mod windows_page {
             .saturating_sub(1)
             .min(name.len());
         String::from_utf16_lossy(&name[..len])
+    }
+}
+
+#[cfg(test)]
+mod kept_tests {
+    use super::Kept;
+    use std::path::{Path, PathBuf};
+
+    fn dir(name: &str) -> PathBuf {
+        PathBuf::from("hardwave").join(name)
+    }
+
+    /// The reopen of 20 Oct 2026: the window closes and the same instance opens it again. It gets
+    /// the environment it had, in the folder it had, instead of starting a browser on that folder.
+    #[test]
+    fn a_reopen_gets_the_environment_of_its_instance() {
+        let mut kept = Kept::default();
+        kept.keep(1, &dir("wettboi-webview2"), "env of 1");
+        assert_eq!(
+            kept.get(1),
+            Some((dir("wettboi-webview2"), "env of 1")),
+            "the environment outlives the window"
+        );
+    }
+
+    /// Two instances: each reopens on its own environment, and the second never takes the first's.
+    #[test]
+    fn instances_keep_their_own_environments() {
+        let mut kept = Kept::default();
+        kept.keep(1, &dir("wettboi-webview2"), "env of 1");
+        kept.keep(2, &dir("wettboi-webview2"), "env of 2");
+        assert_eq!(kept.get(1).map(|(_, e)| e), Some("env of 1"));
+        assert_eq!(kept.get(2).map(|(_, e)| e), Some("env of 2"));
+        assert_eq!(kept.get(3), None, "a new instance starts its own browser");
+    }
+
+    #[test]
+    fn a_newer_environment_takes_the_place_of_the_old_one() {
+        let mut kept = Kept::default();
+        kept.keep(1, &dir("wettboi-webview2"), "first");
+        kept.keep(1, &dir("wettboi-webview2-2"), "second");
+        assert_eq!(kept.get(1), Some((dir("wettboi-webview2-2"), "second")));
+    }
+
+    /// A failed environment is forgotten, so the next window starts a browser again, but a
+    /// failure of an older one does not take away the newer one the instance has since.
+    #[test]
+    fn only_the_environment_that_failed_is_forgotten() {
+        let mut kept = Kept::default();
+        kept.keep(1, Path::new("a"), "old");
+        kept.keep(1, Path::new("a"), "new");
+        kept.forget(1, &"old");
+        assert_eq!(kept.get(1).map(|(_, e)| e), Some("new"));
+        kept.forget(1, &"new");
+        assert_eq!(kept.get(1), None);
+    }
+
+    /// Removing a plug-in from the project lets its browser go, and only its own.
+    #[test]
+    fn a_gone_instance_lets_go_of_its_environment() {
+        let mut kept = Kept::default();
+        kept.keep(1, Path::new("a"), "env of 1");
+        kept.keep(2, Path::new("a"), "env of 2");
+        kept.release(&[1, 7]);
+        assert_eq!(kept.get(1), None);
+        assert_eq!(kept.get(2).map(|(_, e)| e), Some("env of 2"));
     }
 }
 
