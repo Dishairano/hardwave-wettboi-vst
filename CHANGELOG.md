@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.12-rc1
+
+- On Windows, opening the window no longer makes your DAW wait: the window appears at once and the interface follows about a second later. If the interface cannot load, it now tries again instead of staying blank (#24, #26)
+
 ## 0.4.11-rc1
 
 - The LFO can follow your song's tempo. Switch it to TEMPO and the Rate knob picks a note value, from 1/16 up to 8 bars, instead of Hz. FREE works as before and is still the default (#22)
