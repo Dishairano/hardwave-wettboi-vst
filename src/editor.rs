@@ -24,11 +24,16 @@ const MIN_HEIGHT: u32 = 380;
 const MAX_WIDTH: u32 = 2560;
 const MAX_HEIGHT: u32 = 1600;
 
+// wry's handle to the host's window. Windows builds its page without wry (see webview_win).
+#[cfg(not(target_os = "windows"))]
 struct RwhWrapper(usize);
 
+#[cfg(not(target_os = "windows"))]
 unsafe impl Send for RwhWrapper {}
+#[cfg(not(target_os = "windows"))]
 unsafe impl Sync for RwhWrapper {}
 
+#[cfg(not(target_os = "windows"))]
 impl raw_window_handle::HasWindowHandle for RwhWrapper {
     fn window_handle(
         &self,
@@ -49,18 +54,11 @@ impl raw_window_handle::HasWindowHandle for RwhWrapper {
             RawWindowHandle::AppKit(h)
         };
 
-        #[cfg(target_os = "windows")]
-        let raw = {
-            let hwnd = std::num::NonZeroIsize::new(self.0 as isize)
-                .ok_or(raw_window_handle::HandleError::Unavailable)?;
-            let h = raw_window_handle::Win32WindowHandle::new(hwnd);
-            RawWindowHandle::Win32(h)
-        };
-
         Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw) })
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 impl raw_window_handle::HasDisplayHandle for RwhWrapper {
     fn display_handle(
         &self,
@@ -72,9 +70,6 @@ impl raw_window_handle::HasDisplayHandle for RwhWrapper {
 
         #[cfg(target_os = "macos")]
         let raw = RawDisplayHandle::AppKit(raw_window_handle::AppKitDisplayHandle::new());
-
-        #[cfg(target_os = "windows")]
-        let raw = RawDisplayHandle::Windows(raw_window_handle::WindowsDisplayHandle::new());
 
         Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(raw) })
     }
@@ -730,6 +725,7 @@ fn extract_raw_handle(parent: &ParentWindowHandle) -> usize {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn webview_data_dir() -> std::path::PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -801,10 +797,12 @@ fn pin_own_module() -> bool {
 /// One line at each call site: the interface when it can be reached, a page that says why not when
 /// it cannot. Three platforms build the webview slightly differently, and none of them should have
 /// to spell this out.
+#[cfg(not(target_os = "windows"))]
 trait WithUrlOrOffline {
     fn with_url_or_offline(self, url: &str) -> Self;
 }
 
+#[cfg(not(target_os = "windows"))]
 impl WithUrlOrOffline for wry::WebViewBuilder<'_> {
     fn with_url_or_offline(self, url: &str) -> Self {
         if interface_reachable(url) {
@@ -823,6 +821,7 @@ impl WithUrlOrOffline for wry::WebViewBuilder<'_> {
 /// Writes to the editor log when a page starts and when it finishes loading, so the log says
 /// whether the page the WebView was given ever loaded. The URL is logged without its query string:
 /// the token no longer travels there, but a page the window navigates to may put anything in it.
+#[cfg(not(target_os = "windows"))]
 fn log_page_load(event: wry::PageLoadEvent, url: String) {
     elog!(
         "[HardwaveWettBoi] page load {}: {}",
@@ -836,6 +835,7 @@ fn log_page_load(event: wry::PageLoadEvent, url: String) {
 
 /// `url` as it may go into the log. A `data:` URL carries the whole page, and the offline page
 /// holds the interface URL with its token, so only the scheme is kept.
+#[cfg(any(not(target_os = "windows"), test))]
 fn loggable_url(url: &str) -> &str {
     if url
         .get(..5)
@@ -1111,8 +1111,7 @@ fn spawn_windows(
             elog!("[HardwaveWettBoi] failed to bind TCP: {}", e);
             return Box::new(EditorHandle {
                 running: running_clone,
-                _webview: None,
-                _web_context: None,
+                _page: None,
                 _server_thread: None,
                 _editor_thread: None,
             });
@@ -1218,83 +1217,44 @@ fn spawn_windows(
             .unwrap_or(0)
     ));
 
-    let wrapper = RwhWrapper(raw_handle);
-    let mut webview = None;
-    let mut web_context = None;
-
-    for dir in [shared_dir, second_dir, unique_dir] {
-        elog!("[HardwaveWettBoi] WebView2 data dir: {:?}", dir);
-        let _ = std::fs::create_dir_all(&dir);
-        let mut context_attempt = wry::WebContext::new(Some(dir.clone()));
-
-        let ctx = Arc::clone(&context);
-        let pmap = Arc::clone(&param_map);
-        let esize = Arc::clone(&editor_size);
-        let rtx = Arc::clone(&resize_tx);
-
-        elog!(
-            "[HardwaveWettBoi] Creating WebView2 (Windows) {}x{} ...",
-            width,
-            height
-        );
-        use wry::WebViewBuilderExtWindows;
-        let built = wry::WebViewBuilder::with_web_context(&mut context_attempt)
-            .with_url_or_offline(&url)
-            .with_initialization_script(&init_js)
-            .with_ipc_handler(move |msg| {
-                handle_ipc(&ctx, &pmap, &msg.body(), raw_handle, &esize, &rtx);
-            })
-            .with_on_page_load_handler(log_page_load)
-            .with_bounds(wry::Rect {
-                position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
-                size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(
-                    width as f64,
-                    height as f64,
-                )),
-            })
-            .with_transparent(false)
-            .with_devtools(false)
-            // Disable WebView2 browser accelerator keys (Ctrl+P / Ctrl+S /
-            // Ctrl+R / F5 / F12 / Ctrl+Shift+I) at the OS level — belt and
-            // braces with the JS keydown blocker.
-            .with_browser_accelerator_keys(false)
-            .with_background_color((10, 10, 11, 255))
-            .build(&wrapper);
-
-        match built {
-            Ok(wv) => {
-                elog!(
-                    "[HardwaveWettBoi] WebView created successfully in {:?}",
-                    dir
+    // Built in the background (see webview_win): the host has its thread back as soon as this
+    // returns, and the window shows the editor's colour until the page is there.
+    elog!(
+        "[HardwaveWettBoi] Creating WebView2 (Windows) {}x{} in the background ...",
+        width,
+        height
+    );
+    let page = crate::webview_win::open(
+        raw_handle as isize,
+        crate::webview_win::Spec {
+            offline_html: offline_page(&url),
+            reachable: {
+                let url = url.clone();
+                Box::new(move || interface_reachable(&url))
+            },
+            url,
+            init_script: init_js,
+            data_dirs: vec![shared_dir, second_dir, unique_dir],
+            background: (10, 10, 11),
+            browser_args: None,
+            allow_navigation: None,
+            on_message: Box::new(move |body| {
+                handle_ipc(
+                    &context,
+                    &param_map,
+                    body,
+                    raw_handle,
+                    &editor_size,
+                    &resize_tx,
                 );
-                webview = Some(wv);
-                web_context = Some(context_attempt);
-                break;
-            }
-            Err(e) => {
-                elog!(
-                    "[HardwaveWettBoi] WebView creation FAILED in {:?}: {}",
-                    dir,
-                    e
-                );
-            }
-        }
-    }
-
-    if webview.is_none() {
-        elog!(
-            "[HardwaveWettBoi] no WebView2 environment could be created; the window will be empty"
-        );
-    }
-    let webview = webview.map(std::rc::Rc::new);
-    if let Some(wv) = &webview {
-        keeper::watch(raw_handle, wv);
-    }
+            }),
+        },
+    );
+    keeper::watch(raw_handle, &page);
 
     Box::new(EditorHandle {
         running: running_clone,
-        _webview: webview,
-        _web_context: web_context,
+        _page: Some(page),
         _server_thread: Some(server_thread),
         _editor_thread: None,
     })
@@ -1311,9 +1271,9 @@ fn spawn_windows(
 /// correction to the editor log.
 #[cfg(target_os = "windows")]
 mod keeper {
+    use crate::webview_win::{Page, Watch};
     use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::rc::{Rc, Weak};
     use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumChildWindows, GetClassNameW, GetClientRect, IsWindow, IsWindowVisible, KillTimer,
@@ -1328,7 +1288,7 @@ mod keeper {
     const MAX_LOGGED: u32 = 20;
 
     struct Watched {
-        webview: Weak<wry::WebView>,
+        page: Watch,
         last_reshow: Option<std::time::Instant>,
         logged: u32,
     }
@@ -1337,14 +1297,14 @@ mod keeper {
         static WATCHED: RefCell<HashMap<HWND, Watched>> = RefCell::new(HashMap::new());
     }
 
-    /// Start watching `webview` inside the host window `parent`. Call on the host's UI thread.
-    pub fn watch(parent: usize, webview: &Rc<wry::WebView>) {
+    /// Start watching `page` inside the host window `parent`. Call on the host's UI thread.
+    pub fn watch(parent: usize, page: &Page) {
         let parent = parent as HWND;
         WATCHED.with(|w| {
             w.borrow_mut().insert(
                 parent,
                 Watched {
-                    webview: Rc::downgrade(webview),
+                    page: page.watch(),
                     last_reshow: None,
                     logged: 0,
                 },
@@ -1365,15 +1325,15 @@ mod keeper {
 
     unsafe extern "system" fn tick(parent: HWND, _msg: u32, _id: usize, _time: u32) {
         let alive = IsWindow(parent) != 0;
-        let webview = WATCHED.with(|w| w.borrow().get(&parent).and_then(|x| x.webview.upgrade()));
-        let Some(webview) = webview.filter(|_| alive) else {
+        let open = WATCHED.with(|w| w.borrow().get(&parent).is_some_and(|x| x.page.alive()));
+        if !(open && alive) {
             // The editor closed: stop.
             if alive {
                 KillTimer(parent, TIMER_ID);
             }
             WATCHED.with(|w| w.borrow_mut().remove(&parent));
             return;
-        };
+        }
 
         let mut rect: RECT = std::mem::zeroed();
         if GetClientRect(parent, &mut rect) == 0 {
@@ -1383,19 +1343,13 @@ mod keeper {
         let mut notes = Vec::new();
 
         if w > 0 && h > 0 {
-            let now = webview
-                .bounds()
-                .ok()
-                .map(|b| b.size.to_physical::<i32>(1.0));
-            if now.map(|s| (s.width, s.height)) != Some((w, h)) {
-                let _ = webview.set_bounds(wry::Rect {
-                    position: wry::dpi::Position::Physical(wry::dpi::PhysicalPosition::new(0, 0)),
-                    size: wry::dpi::Size::Physical(wry::dpi::PhysicalSize::new(w as u32, h as u32)),
-                });
+            let now = WATCHED.with(|x| x.borrow().get(&parent).and_then(|x| x.page.size()));
+            if now != Some((w, h)) {
+                let _ = WATCHED.with(|x| x.borrow().get(&parent).map(|x| x.page.fit(w, h)));
                 notes.push(match now {
-                    Some(s) => format!(
+                    Some((nw, nh)) => format!(
                         "resized the page from {}x{} to the window's {}x{}",
-                        s.width, s.height, w, h
+                        nw, nh, w, h
                     ),
                     None => format!("sized the page to the window's {}x{}", w, h),
                 });
@@ -1410,8 +1364,7 @@ mod keeper {
                     .is_none_or(|t| t.elapsed() >= RESHOW_EVERY)
             });
             if due {
-                let _ = webview.set_visible(false);
-                let _ = webview.set_visible(true);
+                let _ = WATCHED.with(|x| x.borrow().get(&parent).map(|x| x.page.reveal()));
                 WATCHED.with(|x| {
                     if let Some(x) = x.borrow_mut().get_mut(&parent) {
                         x.last_reshow = Some(std::time::Instant::now());
@@ -1706,8 +1659,12 @@ fn spawn_macos(
 
 struct EditorHandle {
     running: Arc<AtomicBool>,
-    // Shared so the Windows keeper can reach it on the UI thread; it holds only a weak reference.
+    /// The page, and the only strong reference to it: the keeper only watches it.
+    #[cfg(target_os = "windows")]
+    _page: Option<crate::webview_win::Page>,
+    #[cfg(not(target_os = "windows"))]
     _webview: Option<std::rc::Rc<wry::WebView>>,
+    #[cfg(not(target_os = "windows"))]
     _web_context: Option<wry::WebContext>,
     _server_thread: Option<std::thread::JoinHandle<()>>,
     _editor_thread: Option<std::thread::JoinHandle<()>>,
