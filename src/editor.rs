@@ -547,15 +547,7 @@ pub struct WettBoiEditor {
     scale_factor: Mutex<f32>,
     editor_size: Arc<Mutex<(u32, u32)>>,
     resize_tx: Arc<Mutex<Option<Sender<(u32, u32)>>>>,
-    /// This plug-in instance among the others in the process. Its WebView2 environment is kept
-    /// under it from one window to the next (see webview_win).
-    #[cfg(target_os = "windows")]
-    instance: u64,
 }
-
-/// The next instance number; nih-plug makes one editor per plug-in instance.
-#[cfg(target_os = "windows")]
-static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl WettBoiEditor {
     pub fn new(
@@ -570,8 +562,6 @@ impl WettBoiEditor {
             scale_factor: Mutex::new(1.0),
             editor_size: Arc::new(Mutex::new((EDITOR_WIDTH, EDITOR_HEIGHT))),
             resize_tx: Arc::new(Mutex::new(None)),
-            #[cfg(target_os = "windows")]
-            instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -579,14 +569,6 @@ impl WettBoiEditor {
         let (w, h) = *self.editor_size.lock();
         let f = *self.scale_factor.lock();
         ((w as f32 * f) as u32, (h as f32 * f) as u32)
-    }
-}
-
-/// The instance is gone: the browser it kept between windows can go too.
-#[cfg(target_os = "windows")]
-impl Drop for WettBoiEditor {
-    fn drop(&mut self) {
-        crate::webview_win::release(self.instance);
     }
 }
 
@@ -655,7 +637,6 @@ impl Editor for WettBoiEditor {
         {
             elog!("[HardwaveWettBoi] Platform: Windows — using TCP polling bridge");
             spawn_windows(
-                self.instance,
                 raw_handle,
                 url,
                 width,
@@ -1107,7 +1088,6 @@ fn finish(stream: &mut std::net::TcpStream, bytes: &[u8]) {
 
 #[cfg(target_os = "windows")]
 fn spawn_windows(
-    instance: u64,
     raw_handle: usize,
     url: String,
     width: u32,
@@ -1223,8 +1203,6 @@ fn spawn_windows(
     // one takes a fixed second folder, which keeps its sign-in between sessions like the first.
     // Only a third instance needs a folder named after the moment it opened, and that one is
     // rare enough to be worth the clutter it leaves behind.
-    // The list is only walked when the instance has no environment yet: a reopen asks the one it
-    // kept from its last window, which already holds its folder.
     let shared_dir = webview2_data_dir();
     let name = shared_dir
         .file_name()
@@ -1242,15 +1220,13 @@ fn spawn_windows(
     // Built in the background (see webview_win): the host has its thread back as soon as this
     // returns, and the window shows the editor's colour until the page is there.
     elog!(
-        "[HardwaveWettBoi] Creating WebView2 (Windows) {}x{} for instance {} in the background ...",
+        "[HardwaveWettBoi] Creating WebView2 (Windows) {}x{} in the background ...",
         width,
-        height,
-        instance
+        height
     );
     let page = crate::webview_win::open(
         raw_handle as isize,
         crate::webview_win::Spec {
-            instance,
             offline_html: offline_page(&url),
             reachable: {
                 let url = url.clone();
