@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.13-rc1
+
+- Security: update rustls-webpki and webpki-roots (#32)
+
 ## 0.4.12-rc2
 
 - On Windows, reopening the window right after you close it works again: no more wait of up to half a minute, and no empty window (#27)
