@@ -470,15 +470,11 @@ impl Plugin for HardwaveWettBoi {
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         stderr_line!("[HardwaveWettBoi] editor() called — creating WettBoiEditor");
-        let token = auth::load_token();
-        stderr_line!(
-            "[HardwaveWettBoi] auth token: {}",
-            if token.is_some() { "present" } else { "none" }
-        );
+        // The sign-in is read each time the window opens (Editor::spawn), not here: this runs
+        // once per plug-in instance, and a token taken now would miss every later sign-in.
         Some(Box::new(editor::WettBoiEditor::new(
             Arc::clone(&self.params),
             Arc::clone(&self.editor_packet_rx),
-            token,
         )))
     }
 

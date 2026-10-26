@@ -304,12 +304,34 @@ fn token_script(token: Option<&str>) -> String {
     )
 }
 
+/// The part of the init script that lets a sign-in or sign-out made in this window reach the Suite
+/// and every other plug-in: `saveToken` and `clearToken` send it to the plug-in, which writes or
+/// removes the shared token file. They are only defined on our own domain, so a page the window is
+/// ever sent to elsewhere cannot replace the sign-in. Runs after `window.__hardwave` is set.
+fn token_bridge_script() -> &'static str {
+    r#"
+(function() {
+    var h = String(location.hostname || '').toLowerCase();
+    var ours = h === 'hardwavestudios.com' || h.endsWith('.hardwavestudios.com');
+    if (!ours) return;
+    window.__hardwave.saveToken = function(token) {
+        if (typeof token !== 'string' || !token) return;
+        try { window.ipc.postMessage(JSON.stringify({ type: 'save_token', token: token })); } catch (_) {}
+    };
+    window.__hardwave.clearToken = function() {
+        try { window.ipc.postMessage(JSON.stringify({ type: 'clear_token' })); } catch (_) {}
+    };
+})();
+"#
+}
+
 /// Build the init JavaScript that gets injected into the webview on load.
 fn ipc_init_script(params: &WettBoiParams, bpm: f32, token: Option<&str>) -> String {
     let snapshot = snapshot_params(params, bpm, 0.0, 0.0);
     let initial_json = serde_json::to_string(&snapshot).unwrap_or_else(|_| "null".into());
     let version = env!("CARGO_PKG_VERSION");
     let token_js = token_script(token);
+    let bridge_js = token_bridge_script();
 
     format!(
         r#"
@@ -339,7 +361,7 @@ window.__hardwave = {{
         window.ipc.postMessage(JSON.stringify(msg));
     }}
 }};
-
+{bridge_js}
 (function() {{
     var _init = {initial_json};
     function pushInit() {{
@@ -543,22 +565,16 @@ fn handle_ipc(
 pub struct WettBoiEditor {
     params: Arc<WettBoiParams>,
     packet_rx: Arc<Mutex<Receiver<WbPacket>>>,
-    auth_token: Option<String>,
     scale_factor: Mutex<f32>,
     editor_size: Arc<Mutex<(u32, u32)>>,
     resize_tx: Arc<Mutex<Option<Sender<(u32, u32)>>>>,
 }
 
 impl WettBoiEditor {
-    pub fn new(
-        params: Arc<WettBoiParams>,
-        packet_rx: Arc<Mutex<Receiver<WbPacket>>>,
-        auth_token: Option<String>,
-    ) -> Self {
+    pub fn new(params: Arc<WettBoiParams>, packet_rx: Arc<Mutex<Receiver<WbPacket>>>) -> Self {
         Self {
             params,
             packet_rx,
-            auth_token,
             scale_factor: Mutex::new(1.0),
             editor_size: Arc::new(Mutex::new((EDITOR_WIDTH, EDITOR_HEIGHT))),
             resize_tx: Arc::new(Mutex::new(None)),
@@ -579,6 +595,9 @@ impl Editor for WettBoiEditor {
         context: Arc<dyn GuiContext>,
     ) -> Box<dyn std::any::Any + Send> {
         let scale = *self.scale_factor.lock();
+        // Read at every open, never kept from the plug-in's creation: a sign-in made since, in the
+        // Suite or in any plug-in window, is in the shared file now and not in a copy taken then.
+        let auth_token = auth::load_token();
         // First line of every run, so a log sent to support says which build
         // and which machine wrote the lines under it.
         elog!(
@@ -589,7 +608,7 @@ impl Editor for WettBoiEditor {
         elog!(
             "[HardwaveWettBoi] Editor::spawn — scale_factor={:.2}, auth_token={}",
             scale,
-            if self.auth_token.is_some() {
+            if auth_token.is_some() {
                 "present"
             } else {
                 "none"
@@ -614,7 +633,7 @@ impl Editor for WettBoiEditor {
         elog!(
             "[HardwaveWettBoi] Loading URL: {} (token {})",
             WETTBOI_URL,
-            if self.auth_token.is_some() {
+            if auth_token.is_some() {
                 "injected"
             } else {
                 "absent"
@@ -622,7 +641,7 @@ impl Editor for WettBoiEditor {
         );
 
         let param_map = Arc::new(build_param_map(&self.params));
-        let init_js = ipc_init_script(&self.params, 150.0, self.auth_token.as_deref());
+        let init_js = ipc_init_script(&self.params, 150.0, auth_token.as_deref());
         elog!("[HardwaveWettBoi] Init script: {} bytes", init_js.len());
         let raw_handle = extract_raw_handle(&parent);
         elog!("[HardwaveWettBoi] Parent window handle: 0x{:x}", raw_handle);
@@ -741,6 +760,91 @@ fn webview2_data_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("hardwave")
         .join("wettboi-webview2")
+}
+
+/// How old a per-instance WebView2 folder has to be before an editor that opens removes it.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const STALE_INSTANCE_DIR_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// What a per-instance folder is renamed to end in while it is being removed.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const REMOVING: &str = ".removing";
+
+/// Which of the folder names beside the shared WebView2 folder `name` are per-instance folders
+/// left behind, opened more than [`STALE_INSTANCE_DIR_AGE`] before `now_nanos`.
+///
+/// A per-instance folder is `<name>-<nanoseconds since 1970>`, made only for a third window open
+/// at the same time (see `spawn_windows`), and never used again after it closes. The shared folder
+/// and the fixed second one (`<name>-2`) hold the sign-in and are never chosen, and neither is
+/// anything else that happens to sit there.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn stale_instance_dirs<'a>(
+    name: &str,
+    entries: impl IntoIterator<Item = &'a str>,
+    now_nanos: u128,
+) -> Vec<&'a str> {
+    let prefix = format!("{name}-");
+    entries
+        .into_iter()
+        .filter(|entry| {
+            let Some(stamp) = entry.strip_prefix(prefix.as_str()) else {
+                return false;
+            };
+            // One an earlier open already chose and could not finish removing.
+            let (stamp, chosen_before) = match stamp.strip_suffix(REMOVING) {
+                Some(stamp) => (stamp, true),
+                None => (stamp, false),
+            };
+            // A real stamp is 19 digits; anything far shorter is a fixed folder such as "-2".
+            if stamp.len() < 16 || !stamp.bytes().all(|b| b.is_ascii_digit()) {
+                return false;
+            }
+            chosen_before
+                || stamp.parse::<u128>().is_ok_and(|opened| {
+                    now_nanos.saturating_sub(opened) > STALE_INSTANCE_DIR_AGE.as_nanos()
+                })
+        })
+        .collect()
+}
+
+/// Best effort: remove the per-instance WebView2 folders older than a day beside `shared_dir`.
+///
+/// Each one is first renamed, which Windows refuses while any file in it is open, so a folder a
+/// window still uses is left alone instead of half deleted. Nothing here can fail the open.
+#[cfg(target_os = "windows")]
+fn remove_stale_instance_dirs(shared_dir: &std::path::Path) {
+    let (Some(parent), Some(name)) = (shared_dir.parent(), shared_dir.file_name()) else {
+        return;
+    };
+    let name = name.to_string_lossy();
+    let Ok(read) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let entries: Vec<String> = read
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut removed = 0;
+    for stale in stale_instance_dirs(&name, entries.iter().map(String::as_str), now) {
+        let dir = parent.join(stale);
+        let doomed = if stale.ends_with(REMOVING) {
+            Some(dir)
+        } else {
+            let doomed = parent.join(format!("{stale}{REMOVING}"));
+            std::fs::rename(&dir, &doomed).ok().map(|()| doomed)
+        };
+        if doomed.is_some_and(|d| std::fs::remove_dir_all(d).is_ok()) {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        elog!("[HardwaveWettBoi] removed {removed} old per-instance WebView2 folder(s)");
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1204,6 +1308,9 @@ fn spawn_windows(
     // Only a third instance needs a folder named after the moment it opened, and that one is
     // rare enough to be worth the clutter it leaves behind.
     let shared_dir = webview2_data_dir();
+    // Those third-instance folders are never used again once their window closes: the ones more
+    // than a day old go now, so they do not pile up.
+    remove_stale_instance_dirs(&shared_dir);
     let name = shared_dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -1881,6 +1988,102 @@ mod token_tests {
         assert!(!script.contains("</script>"), "{script}");
         assert!(!script.contains("a\"b"), "an unescaped quote: {script}");
         assert!(script.contains(&literal), "{script}");
+    }
+}
+
+#[cfg(test)]
+mod webview_dir_tests {
+    use super::*;
+
+    const DAY: u128 = 24 * 60 * 60 * 1_000_000_000;
+    const NOW: u128 = 1_800_000_000 * 1_000_000_000;
+
+    #[test]
+    fn only_per_instance_folders_older_than_a_day_go() {
+        let old = format!("wettboi-webview2-{}", NOW - 2 * DAY);
+        let fresh = format!("wettboi-webview2-{}", NOW - DAY / 2);
+        let half_removed = format!("wettboi-webview2-{}.removing", NOW - DAY / 2);
+        let entries = [
+            "wettboi-webview2",
+            "wettboi-webview2-2",
+            "wettboi-webview",
+            "kickforge-webview2-1000000000000000000",
+            "wettboi-webview2-12abc4567890123456",
+            old.as_str(),
+            fresh.as_str(),
+            half_removed.as_str(),
+        ];
+        let stale = stale_instance_dirs("wettboi-webview2", entries, NOW);
+        assert_eq!(stale, vec![old.as_str(), half_removed.as_str()]);
+    }
+
+    #[test]
+    fn the_shared_and_second_folders_are_never_chosen() {
+        // However far the clock has moved on.
+        let stale = stale_instance_dirs(
+            "wettboi-webview2",
+            ["wettboi-webview2", "wettboi-webview2-2"],
+            u128::MAX,
+        );
+        assert!(stale.is_empty(), "{stale:?}");
+    }
+
+    #[test]
+    fn a_folder_from_the_future_is_kept() {
+        let ahead = format!("wettboi-webview2-{}", NOW + DAY);
+        let stale = stale_instance_dirs("wettboi-webview2", [ahead.as_str()], NOW);
+        assert!(stale.is_empty(), "{stale:?}");
+    }
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+
+    #[test]
+    fn the_page_can_save_and_clear_the_sign_in() {
+        let script = ipc_init_script(&WettBoiParams::default(), 150.0, None);
+        assert!(
+            script.contains("window.__hardwave.saveToken = function(token)"),
+            "{script}"
+        );
+        assert!(
+            script.contains("JSON.stringify({ type: 'save_token', token: token })"),
+            "{script}"
+        );
+        assert!(
+            script.contains("window.__hardwave.clearToken = function()"),
+            "{script}"
+        );
+        assert!(
+            script.contains("JSON.stringify({ type: 'clear_token' })"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn the_bridge_comes_after_the_object_it_extends_and_only_on_our_domain() {
+        let script = ipc_init_script(&WettBoiParams::default(), 150.0, None);
+        let object = script.find("window.__hardwave = {").expect("the object");
+        let bridge = script.find("saveToken = function").expect("the bridge");
+        assert!(object < bridge, "saveToken would be overwritten: {script}");
+        let bridge_js = token_bridge_script();
+        let gate = bridge_js
+            .find("if (!ours) return;")
+            .expect("the domain gate");
+        assert!(gate < bridge_js.find("saveToken").unwrap(), "{bridge_js}");
+    }
+
+    #[test]
+    fn the_version_is_injected() {
+        let script = ipc_init_script(&WettBoiParams::default(), 150.0, None);
+        assert!(
+            script.contains(&format!(
+                "window.__HARDWAVE_VST_VERSION = '{}';",
+                env!("CARGO_PKG_VERSION")
+            )),
+            "{script}"
+        );
     }
 }
 
