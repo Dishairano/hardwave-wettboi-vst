@@ -6,6 +6,7 @@ name = "hardwave-wettboi"
 version = "0.4.13-rc1"
 edition = "2021"
 license = "Proprietary"
+publish = false
 description = "Hardwave WettBoi — sidechain reverb & delay VST3/CLAP plugin by Hardwave Studios"
 
 [lib]
