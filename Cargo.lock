@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "hardwave-wettboi"
-version = "0.4.13-rc1"
+version = "0.4.14-rc1"
 dependencies = [
  "clap-sys",
  "crossbeam-channel",
