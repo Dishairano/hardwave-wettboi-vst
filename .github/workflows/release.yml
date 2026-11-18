@@ -302,6 +302,9 @@ jobs:
           echo "Database updated: wettboi -> ${VERSION_NUM}"
       - name: Post Discord changelog
         if: ${{ env.DISCORD_WEBHOOK_URL != '' }}
+        # The post is a notice, not part of the release. A dead or replaced webhook (the old ones
+        # leaked on 12 Nov 2026) must not fail this job: publish-beta and evidence need it green.
+        continue-on-error: true
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_BETA_WEBHOOK_URL: ${{ secrets.DISCORD_BETA_WEBHOOK_URL }}
