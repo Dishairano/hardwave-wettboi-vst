@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.14-rc1
+
+- Secure Code Check: replace the leaked signing key and revoke the old one (#39)
+- Secure Code Check for WettBoi (#37)
+- Developer seat: remaining changes (#35)
+
 ## 0.4.13-rc1
 
 - Security: update rustls-webpki and webpki-roots (#32)
